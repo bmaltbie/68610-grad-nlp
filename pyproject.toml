@@ -1,0 +1,32 @@
+[project]
+name = "elephant-eval"
+version = "0.1.0"
+description = "Multi-turn social sycophancy evaluation extending the ELEPHANT benchmark"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.30",
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "seaborn>=0.13",
+    "scipy>=1.11",
+    "python-dotenv>=1.0",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
