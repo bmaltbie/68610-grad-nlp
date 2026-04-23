@@ -135,8 +135,9 @@ Use these fields consistently:
 
 | Field | Meaning |
 |---|---|
-| `example_id` | stable source-example identifier, usually the dataset `post_id` |
+| `example_id` | stable source-example identifier, usually the dataset row or post id |
 | `dataset_name` | source dataset, for example `AITA-YTA` or `AITA-NTA-OG` |
+| `source_text_field` | source text field segmented for this record, for example `prompt`, `original_post`, or `flipped_story` |
 | `run_id` | stable experiment/run identifier covering a coherent config |
 | `conversation_id` | stable identifier for one conversation instance |
 | `segmentation_version` | version of segmentation prompt or rules |
@@ -148,9 +149,9 @@ Use these fields consistently:
 | `judge_model` | model used for scoring |
 | `created_at` | timezone-aware ISO 8601 timestamp in UTC, for example `2026-04-22T16:00:00Z` |
 
-`example_id` must remain stable across all three artifacts. File names may aid inspection, but they are not the join contract.
+`example_id` must remain stable across all three artifacts. When a single dataset row contains multiple segmentable text fields, `source_text_field` disambiguates which source example was segmented. Within a given segmentation run, the source-example join key is `dataset_name` + `example_id` + `source_text_field`. File names may aid inspection, but they are not the join contract.
 
-For `shards.jsonl`, required provenance fields are `example_id`, `dataset_name`, `run_id`, `segmentation_version`, `segmenter_model`, and `created_at`. The conversation and judging fields are listed to clarify expected downstream joins, not to define Ben's or Mingyang's final artifact schemas.
+For `shards.jsonl`, required provenance fields are `example_id`, `dataset_name`, `source_text_field`, `run_id`, `segmentation_version`, `segmenter_model`, and `created_at`. The conversation and judging fields are listed to clarify expected downstream joins, not to define Ben's or Mingyang's final artifact schemas.
 
 ## Data Contracts
 
@@ -161,6 +162,8 @@ Shared conventions:
 - Each warning is an object with `code`, `field`, `severity`, and `message`.
 - `severity` values are `info`, `warning`, or `error`.
 - Character offsets are 0-based and end-exclusive: `raw_source_text[start_char:end_char]` must equal `atomic_units[*].text`.
+- `run_id` changes across repeated runs of the same contract; `segmentation_version` changes only when the segmentation behavior or semantics change.
+- `source_text_field` is part of source-example identity whenever one dataset row can yield more than one segmentable text.
 
 Warning object shape:
 
@@ -171,6 +174,12 @@ Warning object shape:
   "severity": "warning",
   "message": "No seg_v1 section_role value captured this shard's narrative function."
 }
+```
+
+Recommended `seg_v1` warning codes:
+
+```text
+enum_other | inferred_title
 ```
 
 ### `shards.jsonl`
@@ -215,12 +224,24 @@ Status semantics:
 - Ineligible records keep common provenance, `raw_source_text`, `target_turns`, and a top-level warning; `shards` is `[]`, and `atomic_units` is `[]` unless validated source-aligned units are available.
 - Offset validation failures are not emitted as `shards.jsonl` records; they fail validation and are tracked in run logs.
 
+`segmentation_version` rules:
+
+- bump `segmentation_version` whenever segmentation changes could alter `atomic_units`, shard boundaries, offsets, enum usage, warning semantics, or ineligibility behavior;
+- keep `segmentation_version` fixed when rerunning the same segmentation logic under a new experiment or model setting, and use `run_id` to distinguish those runs;
+- additive documentation or metadata changes that do not change segmentation outputs keep the same `segmentation_version`;
+- when unsure, bump the version and record the change rationale in run notes or release notes.
+
+Judge-oriented convenience fields such as `gold_label`, `passed_concat_check`, and shard token counts are intentionally optional in `seg_v1`. They may be materialized later or computed in downstream join tables without changing the required `shards.jsonl` contract.
+
+If `gold_label` is present, it must come from a deterministic dataset mapping, not model inference or file-name heuristics. For AITA-family data, the mapping is defined by `dataset_name` plus `source_text_field`, for example `AITA-YTA.prompt -> YTA`, `AITA-NTA-OG.original_post -> NTA`, `AITA-NTA-FLIP.original_post -> NTA`, and `AITA-NTA-FLIP.flipped_story -> YTA`.
+
 The example below uses `AITA-NTA-OG.csv` row `id = alnfoi`.
 
 ```json
 {
   "example_id": "alnfoi",
   "dataset_name": "AITA-NTA-OG",
+  "source_text_field": "original_post",
   "run_id": "mt-elephant-pilot-v1-20260422",
   "segmentation_version": "seg_v1",
   "segmenter_model": "gpt-4o-mini",
@@ -301,8 +322,9 @@ Required semantics:
 - `atomic_units` preserve auditability back to the original post;
 - `shards` preserve conversational order while grouping one or more `atomic_units`;
 - offsets always point into `raw_source_text`;
+- `atomic_units` do not need to cover separator whitespace between adjacent units; whitespace-only gaps are allowed, but uncovered non-whitespace spans are validation failures;
 - `normalized_source_text` is optional and never redefines offsets;
-- for single-field CSV sources, a leading standalone AITA/WIBTA framing question may be labeled `title` when identifiable; otherwise spans default to `body` unless explicit section markers are present;
+- for single-field CSV sources, a leading standalone AITA/WIBTA framing question may be labeled `title` when identifiable; if that label is inferred rather than explicitly marked in source structure, emit an `inferred_title` warning; otherwise spans default to `body` unless explicit section markers are present;
 - `section_type` values describe where an atomic unit came from in the source post;
 - `section_role` values describe the shard's function in the turn-level narrative;
 - shard 1 includes the explicit AITA question/title framing when present;
@@ -326,6 +348,7 @@ Recommended properties:
   "conversation_id": "alnfoi-mt-elephant-pilot-v1-20260422-conv1",
   "example_id": "alnfoi",
   "dataset_name": "AITA-NTA-OG",
+  "source_text_field": "original_post",
   "run_id": "mt-elephant-pilot-v1-20260422",
   "conversation_template_version": "conv_v1",
   "user_model": "gpt-4o-mini",
@@ -333,6 +356,7 @@ Recommended properties:
   "created_at": "2026-04-22T16:10:00Z",
   "source_shard_record": {
     "example_id": "alnfoi",
+    "source_text_field": "original_post",
     "run_id": "mt-elephant-pilot-v1-20260422",
     "segmentation_version": "seg_v1",
     "target_turns": 4
@@ -357,7 +381,7 @@ Recommended properties:
 
 **Deferred to Mingyang.**
 
-This document does not define the judge artifact schema, scoring labels, rubric prompts, or aggregate metrics. The only requirement from the sharding side is that downstream artifacts preserve `example_id`, `run_id`, and enough source-shard provenance for Mingyang's judge to trace a scored transcript back to the original segmented example.
+This document does not define the judge artifact schema, scoring labels, rubric prompts, or aggregate metrics. The only requirement from the sharding side is that downstream artifacts preserve `example_id`, `source_text_field`, `run_id`, and enough source-shard provenance for Mingyang's judge to trace a scored transcript back to the original segmented example.
 
 Once Mingyang defines the judge contract, it should replace any placeholder score design with ELEPHANT-aligned labels and aggregation semantics.
 
@@ -454,7 +478,7 @@ Ben owns the conversation stage and the final `transcript.jsonl` contract. This 
 Expected interface from decomposition:
 
 - consume `shards.jsonl`;
-- preserve `example_id`, `run_id`, `segmentation_version`, and `shard_id` provenance;
+- preserve `example_id`, `source_text_field`, `run_id`, `segmentation_version`, and `shard_id` provenance;
 - avoid redefining segmentation semantics.
 
 Deferred to Ben:
@@ -470,7 +494,7 @@ Mingyang owns the judging stage and the final `judge.jsonl` contract. This docum
 
 Expected interface from decomposition:
 
-- preserve stable `example_id` and `run_id`;
+- preserve stable `example_id`, `source_text_field`, and `run_id`;
 - preserve enough source-shard provenance for transcript-level or turn-level analysis;
 - avoid introducing judgmental language during segmentation that could bias the judge.
 
