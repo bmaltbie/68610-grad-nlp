@@ -64,7 +64,28 @@ uv run --project decomposition python -m decomposition.cli deterministic \
   --errors decomposition/artifacts/run_errors.deterministic.jsonl
 ```
 
-Generate provider-neutral LLM requests:
+Run native Anthropic segmentation:
+
+```bash
+export ANTHROPIC_API_KEY="..."
+
+uv run --project decomposition python -m decomposition.cli anthropic \
+  --dataset datasets/AITA-NTA-OG.csv \
+  --dataset-name AITA-NTA-OG \
+  --source-field original_post \
+  --run-id mt-elephant-pilot-v1 \
+  --model claude-sonnet-4-5 \
+  --limit 20 \
+  --out decomposition/artifacts/shards.anthropic.jsonl \
+  --errors decomposition/artifacts/run_errors.anthropic.jsonl \
+  --raw-responses decomposition/artifacts/seg_v1_anthropic_responses.jsonl
+```
+
+The Anthropic command is the normal human path for LLM-assisted segmentation.
+It still uses local source-span alignment before writing `shards.jsonl`; model
+offsets are never trusted.
+
+Generate provider-neutral LLM requests for replay, batch runs, or debugging:
 
 ```bash
 uv run --project decomposition python -m decomposition.cli generate-requests \

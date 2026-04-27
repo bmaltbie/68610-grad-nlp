@@ -1,16 +1,21 @@
 from pathlib import Path
+import argparse
 import json
+import os
 import subprocess
 import sys
+
+from decomposition import cli
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess:
+def run_cli(*args: str, cwd: Path, env=None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "decomposition.cli", *args],
         cwd=str(cwd),
+        env=env,
         text=True,
         capture_output=True,
     )
@@ -69,6 +74,7 @@ def test_cli_help_explains_pipeline() -> None:
 
     assert result.returncode == 0
     assert "Turn AITA CSV rows into validated decomposition artifacts" in result.stdout
+    assert "anthropic" in result.stdout
     assert "generate-requests" in result.stdout
     assert "uv run --project decomposition" in result.stdout
 
@@ -207,6 +213,185 @@ def test_cli_ingest_responses_valid_and_invalid(tmp_path: Path) -> None:
     assert len(error_rows) == 1
     assert "not found" in error_rows[0]["message"]
     assert "verbatim atomic-unit text" in error_rows[0]["fix"]
+
+
+class FakeMessages:
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def create(self, **kwargs):
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class FakeAnthropicClient:
+    def __init__(self, responses):
+        self.messages = FakeMessages(responses)
+
+
+def anthropic_message(payload, stop_reason="end_turn"):
+    return {
+        "id": "msg_test",
+        "model": "claude-test",
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+        "content": [{"type": "text", "text": payload if isinstance(payload, str) else json.dumps(payload)}],
+    }
+
+
+def valid_payload(raw: str):
+    parts = raw.split(" ")
+    return {
+        "atomic_units": [
+            {"text": parts[0], "section_type": "title"},
+            {"text": parts[1], "section_type": "body"},
+            {"text": parts[2], "section_type": "body"},
+            {"text": parts[3], "section_type": "body"},
+        ],
+        "shards": [
+            {"unit_ids": [1], "section_role": "setup"},
+            {"unit_ids": [2], "section_role": "main_event"},
+            {"unit_ids": [3], "section_role": "background_context"},
+            {"unit_ids": [4], "section_role": "current_conflict"},
+        ],
+        "warnings": [],
+    }
+
+
+def anthropic_args(tmp_path: Path, dataset: Path, client: FakeAnthropicClient) -> argparse.Namespace:
+    return argparse.Namespace(
+        dataset=dataset,
+        dataset_name="AITA-NTA-OG",
+        source_field="original_post",
+        run_id="run1",
+        segmentation_version="seg_v1",
+        created_at="2026-04-27T00:00:00Z",
+        limit=None,
+        out=tmp_path / "shards.jsonl",
+        errors=tmp_path / "errors.jsonl",
+        raw_responses=tmp_path / "raw_responses.jsonl",
+        model="claude-test",
+        max_tokens=4096,
+        temperature=0.0,
+        _anthropic_client=client,
+    )
+
+
+def test_cli_anthropic_happy_path_with_fake_client(tmp_path: Path) -> None:
+    raw = "AITA? First. Second. Third."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\n" % raw, encoding="utf-8")
+    args = anthropic_args(tmp_path, dataset, FakeAnthropicClient([anthropic_message(valid_payload(raw))]))
+
+    result = cli.anthropic_command(args)
+
+    assert result == 0
+    rows = read_jsonl(args.out)
+    assert len(rows) == 1
+    assert rows[0]["segmenter_model"] == "claude-test"
+    assert len(rows[0]["shards"]) == 4
+    assert read_jsonl(args.errors) == []
+    raw_rows = read_jsonl(args.raw_responses)
+    assert raw_rows[0]["provider"] == "anthropic"
+    assert raw_rows[0]["raw_response"]["id"] == "msg_test"
+
+
+def test_cli_anthropic_logs_bad_rows_and_continues(tmp_path: Path) -> None:
+    first = "AITA? First. Second. Third."
+    second = "AITA? Alpha. Beta. Gamma."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\nex2,%s\n" % (first, second), encoding="utf-8")
+    bad_payload = {
+        "atomic_units": [{"text": "AITA?", "section_type": "title"}, {"text": "rewritten text", "section_type": "body"}],
+        "shards": [
+            {"unit_ids": [1], "section_role": "setup"},
+            {"unit_ids": [2], "section_role": "main_event"},
+            {"unit_ids": [1], "section_role": "background_context"},
+            {"unit_ids": [2], "section_role": "current_conflict"},
+        ],
+        "warnings": [],
+    }
+    client = FakeAnthropicClient([anthropic_message(valid_payload(first)), anthropic_message(bad_payload)])
+    args = anthropic_args(tmp_path, dataset, client)
+
+    result = cli.anthropic_command(args)
+
+    assert result == 0
+    assert len(read_jsonl(args.out)) == 1
+    error_rows = read_jsonl(args.errors)
+    assert len(error_rows) == 1
+    assert error_rows[0]["example_id"] == "ex2"
+    assert "not found" in error_rows[0]["message"]
+
+
+def test_cli_anthropic_logs_malformed_json(tmp_path: Path) -> None:
+    raw = "AITA? First. Second. Third."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\n" % raw, encoding="utf-8")
+    args = anthropic_args(tmp_path, dataset, FakeAnthropicClient([anthropic_message("{not json}")]))
+
+    result = cli.anthropic_command(args)
+
+    assert result == 0
+    assert read_jsonl(args.out) == []
+    error_rows = read_jsonl(args.errors)
+    assert len(error_rows) == 1
+    assert "model_output is not valid JSON" in error_rows[0]["message"]
+
+
+def test_cli_anthropic_logs_max_tokens_response(tmp_path: Path) -> None:
+    raw = "AITA? First. Second. Third."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\n" % raw, encoding="utf-8")
+    args = anthropic_args(
+        tmp_path,
+        dataset,
+        FakeAnthropicClient([anthropic_message(valid_payload(raw), stop_reason="max_tokens")]),
+    )
+
+    result = cli.anthropic_command(args)
+
+    assert result == 0
+    assert read_jsonl(args.out) == []
+    error_rows = read_jsonl(args.errors)
+    assert len(error_rows) == 1
+    assert error_rows[0]["stop_reason"] == "max_tokens"
+    assert "max_tokens" in error_rows[0]["message"]
+    assert len(read_jsonl(args.raw_responses)) == 1
+
+
+def test_cli_anthropic_missing_key_returns_error(tmp_path: Path) -> None:
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,AITA? First. Second. Third.\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    out = tmp_path / "shards.jsonl"
+    errors = tmp_path / "errors.jsonl"
+
+    result = run_cli(
+        "anthropic",
+        "--dataset",
+        str(dataset),
+        "--dataset-name",
+        "AITA-NTA-OG",
+        "--source-field",
+        "original_post",
+        "--run-id",
+        "run1",
+        "--out",
+        str(out),
+        "--errors",
+        str(errors),
+        cwd=REPO_ROOT,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "ANTHROPIC_API_KEY" in result.stderr
+    assert not out.exists()
+    assert not errors.exists()
 
 
 def test_cli_validate_invalid_file_returns_error(tmp_path: Path) -> None:

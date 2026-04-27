@@ -6,6 +6,14 @@ import argparse
 import json
 import sys
 
+from .anthropic_io import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_MAX_TOKENS,
+    AnthropicRunError,
+    call_anthropic,
+    create_anthropic_client,
+    raise_for_incomplete_response,
+)
 from .datasets import DatasetError, load_dataset
 from .deterministic import SegmentationConfig, deterministic_segment, utc_now
 from .llm_io import LLMIngestError, build_request, load_requests, read_jsonl, record_from_response
@@ -16,7 +24,10 @@ ROOT_DESCRIPTION = """Turn AITA CSV rows into validated decomposition artifacts.
 
 The CLI has two production paths:
   1. deterministic: local baseline segmentation, no model calls.
-  2. generate-requests + ingest-responses: provider-neutral LLM segmentation.
+  2. anthropic: direct native Anthropic segmentation.
+
+The lower-level generate-requests + ingest-responses path remains available for
+batch runs, replay, and provider-neutral debugging.
 
 Every emitted shard record is validated before it enters shards.jsonl. Rejected
 rows go to run_errors.jsonl so a batch can keep moving without hiding failures.
@@ -55,7 +66,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (DatasetError, FileNotFoundError, LLMIngestError, ValidationError, OSError) as exc:
+    except (
+        AnthropicRunError,
+        DatasetError,
+        FileNotFoundError,
+        LLMIngestError,
+        ValidationError,
+        OSError,
+    ) as exc:
         print("error: %s" % exc, file=sys.stderr)
         hint = _hint_for_exception(exc)
         if hint:
@@ -109,6 +127,60 @@ def generate_requests_command(args: argparse.Namespace) -> int:
             )
             written += 1
     print("written=%d" % written)
+    return 0
+
+
+def anthropic_command(args: argparse.Namespace) -> int:
+    """Call Anthropic directly and write validated shard records."""
+    client = getattr(args, "_anthropic_client", None) or create_anthropic_client()
+    _ensure_parent(args.out)
+    _ensure_parent(args.errors)
+    if args.raw_responses:
+        _ensure_parent(args.raw_responses)
+    written = 0
+    errors = 0
+    raw_handle = args.raw_responses.open("w", encoding="utf-8") if args.raw_responses else None
+    try:
+        with args.out.open("w", encoding="utf-8") as out_handle, args.errors.open(
+            "w", encoding="utf-8"
+        ) as err_handle:
+            for example in load_dataset(args.dataset, args.dataset_name, args.source_field, args.limit):
+                request: Optional[Dict[str, Any]] = None
+                response: Optional[Dict[str, Any]] = None
+                try:
+                    request = build_request(
+                        example,
+                        run_id=args.run_id,
+                        segmentation_version=args.segmentation_version,
+                        created_at=args.created_at,
+                    )
+                    response = call_anthropic(
+                        request,
+                        model=args.model,
+                        max_tokens=args.max_tokens,
+                        temperature=args.temperature,
+                        client=client,
+                        created_at=args.created_at,
+                    )
+                    if raw_handle:
+                        _write_jsonl(raw_handle, response)
+                    raise_for_incomplete_response(response)
+                    record = record_from_response(request, response)
+                    _write_jsonl(out_handle, record.to_dict())
+                    written += 1
+                except Exception as exc:  # noqa: BLE001 - batch tool logs row-level failures.
+                    error = _run_error(example, args.run_id, args.segmentation_version, "anthropic", exc)
+                    if request:
+                        error["request_id"] = request.get("request_id")
+                    if response:
+                        error["stop_reason"] = response.get("stop_reason")
+                        error["provider_message_id"] = response.get("provider_message_id")
+                    _write_jsonl(err_handle, error)
+                    errors += 1
+    finally:
+        if raw_handle:
+            raw_handle.close()
+    print("written=%d errors=%d" % (written, errors))
     return 0
 
 
@@ -230,6 +302,44 @@ def _parser() -> argparse.ArgumentParser:
     request_parser.add_argument("--out", type=Path, required=True, help="destination request JSONL path")
     request_parser.set_defaults(func=generate_requests_command)
 
+    anthropic_parser = subparsers.add_parser(
+        "anthropic",
+        help="call Anthropic and write validated shards.jsonl",
+        description="Run native Anthropic segmentation, align verbatim spans locally, and validate each record.",
+        epilog="""Example:
+  python -m decomposition.cli anthropic --dataset datasets/AITA-NTA-OG.csv \
+--dataset-name AITA-NTA-OG --source-field original_post --run-id pilot \
+--model claude-sonnet-4-5 \
+--out decomposition/artifacts/shards.anthropic.jsonl \
+--errors decomposition/artifacts/run_errors.anthropic.jsonl \
+--raw-responses decomposition/artifacts/seg_v1_anthropic_responses.jsonl
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_dataset_args(anthropic_parser)
+    anthropic_parser.add_argument("--out", type=Path, required=True, help="destination shards.jsonl path")
+    anthropic_parser.add_argument("--errors", type=Path, required=True, help="destination run_errors.jsonl path")
+    anthropic_parser.add_argument(
+        "--raw-responses",
+        type=Path,
+        default=None,
+        help="optional replay/audit JSONL containing raw Anthropic response wrappers",
+    )
+    anthropic_parser.add_argument("--model", default=DEFAULT_ANTHROPIC_MODEL, help="Anthropic model name")
+    anthropic_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help="maximum output tokens for each Anthropic response",
+    )
+    anthropic_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="sampling temperature for Anthropic generation",
+    )
+    anthropic_parser.set_defaults(func=anthropic_command)
+
     ingest_parser = subparsers.add_parser(
         "ingest-responses",
         help="align and validate provider-neutral model responses",
@@ -327,6 +437,14 @@ def _hint_for_exception(exc: Exception) -> Optional[str]:
     """Return a short remediation hint for common developer-facing errors."""
     if isinstance(exc, DatasetError):
         return "Check that --dataset points to the intended CSV and --source-field matches one header exactly."
+    if isinstance(exc, AnthropicRunError):
+        if "ANTHROPIC_API_KEY" in str(exc):
+            return "Export ANTHROPIC_API_KEY before running the anthropic command."
+        if "anthropic package is not installed" in str(exc):
+            return "Run `uv sync --project decomposition` to install decomposition dependencies."
+        if "max_tokens" in str(exc):
+            return "Increase --max-tokens and retry this row."
+        return "Check ANTHROPIC_API_KEY, --model, --max-tokens, and the raw response sidecar for the failed row."
     if isinstance(exc, FileNotFoundError):
         return "Check the path exists. For prompts, confirm --segmentation-version has a matching prompts/<version>.txt file."
     if isinstance(exc, LLMIngestError):
