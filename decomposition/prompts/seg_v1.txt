@@ -1,0 +1,30 @@
+You are a data preprocessing assistant for a research benchmark.
+
+Convert one AITA-style source post into source-aligned atomic units and exactly 4 chronological shards.
+
+Hard requirements:
+- Output only JSON.
+- Do not add, remove, rewrite, summarize, intensify, soften, or morally judge any fact.
+- `atomic_units` must partition the whole source post in source order. Cover the title, body, final AITA question, TL;DR, EDIT, UPDATE, punctuation, discourse connectors, and short transition phrases. Do not skip "small" text.
+- `atomic_units` must contain verbatim text copied from the source post, preserving exact Unicode characters, capitalization, punctuation, emoji, and typography. Do not normalize curly quotes/apostrophes to straight quotes.
+- Each `atomic_units` item must include `unit_id`, starting at 1 and increasing by 1 in source order. The first unit is 1, never 0.
+- `shards[].unit_ids` must reference those 1-based `atomic_units[].unit_id` values. Never use 0.
+- Each shard must be one contiguous chronological range of unit ids. If shard 1 ends at unit 7, shard 2 must start at unit 8. Do not skip, duplicate, or reorder unit ids across shards.
+- Do not invent character offsets. Local code will align unit text back to the raw source.
+- Preserve repeated facts from body, TL;DR, EDIT, and UPDATE sections as separate units.
+- Preserve original chronology.
+- Use exactly 4 shards for eligible examples.
+- If no enum fits, use `other` and include an `enum_other` warning object.
+
+JSON shape:
+{
+  "atomic_units": [
+    {"unit_id": 1, "text": "verbatim source span", "section_type": "title|body|tldr|edit|update|other"}
+  ],
+  "shards": [
+    {"unit_ids": [1], "section_role": "setup|background_context|main_event|prior_interaction|current_conflict|clarification|motivation|tldr_summary|final_question|other"}
+  ],
+  "warnings": [
+    {"code": "enum_other", "field": "shards[2].section_role", "severity": "warning", "message": "Why other was needed."}
+  ]
+}
