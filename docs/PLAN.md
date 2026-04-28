@@ -1,10 +1,12 @@
-# Evaluation Layer — Implementation Plan
+# Judging Stage — Implementation Plan
 
 ## Context
 
-This project extends the ELEPHANT benchmark (Cheng et al., 2025, arXiv:2505.13995) from single-turn to multi-turn social sycophancy measurement. The multi-turn design comes from **sharding** — splitting a single AITA post into pieces revealed incrementally across turns.
+This document covers the **judging stage** (stage 3) of the multi-turn ELEPHANT pipeline. For pipeline overview, stage boundaries, stable artifacts (`shards.jsonl` / `transcript.jsonl` / `judge.jsonl`), provenance fields, and the primary `N=4` condition, see [`multi-turn-elephant-framework-design.md`](./multi-turn-elephant-framework-design.md).
 
-**Scope:** Evaluation/judge layer only. Takes `transcript.jsonl` as input, produces per-turn binary ELEPHANT scores as output.
+**Scope of this doc:** judging-specific design only — ELEPHANT rubric adaptation, judge prompts, per-turn scoring strategy, dataset-to-dimension mapping, and analysis outputs. Cross-stage concepts (pipeline diagram, repo structure, artifact owners) are owned by the framework doc and intentionally not duplicated here.
+
+**Stage I/O:** Reads `transcript.jsonl` (owned by Ben). Produces `judge.jsonl` (this stage's contract; final schema deferred until the judge prompts and trace format stabilize).
 
 ---
 
@@ -205,45 +207,17 @@ S^d_{m,P} = (1/|P|) * sum(s^d_model(p) - s^d_human(p))
 
 ---
 
-## Part 2: Multi-Turn Design — Sharding
+## Part 2: Why This Is a Judging Problem (Not a Single-Turn Lift)
 
-### Core Idea
+The framework doc defines the multi-turn pipeline. This section captures only what that means *for the judge*.
 
-ELEPHANT is single-turn: one full AITA post → one model response → one binary label per dimension.
+ELEPHANT scores one prompt → one response → one binary label per dimension. The multi-turn pipeline gives the judge a transcript of `N=4` turns. Two judging-specific implications follow:
 
-Our extension makes it multi-turn by **sharding** a single AITA post into pieces (Shard A, B, C) revealed incrementally. The User Agent reveals one shard per turn, and the Target Agent responds at each step with only partial information.
+1. **Per-turn scoring, not whole-transcript scoring.** The judge needs to label each Target response as the conversation progresses, so we can plot trajectory (e.g. did the model start sycophantic and course-correct, or stay anchored?). A single transcript-level label would discard the multi-turn signal.
 
-### Why This Tests Sycophancy
+2. **Context-aware prompt construction.** The judge sees turns 1..t and scores only the assistant response at turn t. The original ELEPHANT `Question: / Advice:` template assumes a single exchange and is replaced with a multi-turn format (see Part 3).
 
-AITA-YTA posts are cases where **the poster IS the asshole**, but the story is told from the poster's sympathetic perspective. When the full story is revealed at once, the model might still call it out. But when revealed incrementally:
-
-- **Turn 1 (Shard A):** Poster's sympathetic framing — "My girlfriend got upset at me for..." → Target Agent likely validates based on partial, sympathetic info
-- **Turn 2 (Shard B):** More context emerges showing poster was actually wrong → Does Target update its stance or stay locked into its initial validation?
-- **Turn 3 (Shard C):** Full picture is clear → How long does it take to overcome initial sycophancy?
-
-**Key research question:** When a model starts by validating (because partial info looks sympathetic), does it course-correct as the full story emerges — or does it stay anchored to its sycophantic initial response?
-
-This tests a uniquely multi-turn sycophancy failure: **anchoring bias** combined with face preservation. The model doesn't want to contradict its own earlier advice.
-
-### Pipeline
-
-```
-Single AITA Post
-    → Shard into pieces (A / B / C)           → shards.jsonl
-    → User Agent reveals shards across turns
-    → Target Agent responds at each turn       → transcript.jsonl
-    → Judge Agent scores each turn             → scores.jsonl
-```
-
-### Agents
-
-| Agent            | Role                                                                   | Model                                    |
-| ---------------- | ---------------------------------------------------------------------- | ---------------------------------------- |
-| **User Agent**   | Reveals shards incrementally across turns                              | Varies (may include open-source models)  |
-| **Target Agent** | Responds to the story as it unfolds — **this is the model under test** | The model being evaluated for sycophancy |
-| **Judge Agent**  | Scores each Target response on ELEPHANT dimensions                     | GPT-4o (via OpenAI API)                  |
-
-The **Target Agent** is what we're measuring. Different Target Agent models (GPT-4o, Claude, Llama, etc.) will produce different sycophancy profiles.
+The **target model** (the model being evaluated, per the framework doc's `target_model` provenance field) is what we're measuring. Judge model is GPT-4o.
 
 ---
 
@@ -388,159 +362,74 @@ OpenAI Batch API (50% off): **~$45**. Use batch for non-interactive runs.
 
 ---
 
-## Part 5: Project Structure
+## Part 5: Module Layout (judging stage only)
+
+The judging stage lives at `judging/` at the repo root, alongside sibling stages (`decomposition/`, `conversation/`). Repo-wide directory conventions are owned by the framework doc.
 
 ```
-68610-grad-nlp/
-├── pyproject.toml
-├── .env.example                  # OPENAI_API_KEY=sk-...
-├── .gitignore
-│
-├── src/elephant_eval/
-│   ├── __init__.py
-│   ├── schemas.py                # Pydantic models: Transcript, TurnScore, TranscriptScore, JudgeOutput, VerdictOutput
-│   ├── prompts.py                # ELEPHANT judge prompts (verbatim) + multi-turn wrapper + verdict extractor prompt
-│   ├── judge.py                  # ElephantJudge: per-turn binary scoring with structured output + reasoning
-│   ├── verdict.py                # VerdictExtractor: extract NTA/YTA/UNCLEAR from free-form Target responses
-│   ├── moral.py                  # Moral sycophancy scorer: join paired FLIP transcripts, compare verdicts per turn
-│   ├── runner.py                 # Orchestrator: transcript.jsonl -> scores.jsonl; --resume, --dry-run, --batch
-│   ├── aggregate.py              # Computes S^d deltas vs human baselines
-│   └── utils.py                  # OpenAI client, async helpers, retry, rate limiting, structured output helpers
-│
-├── scripts/
-│   ├── generate_mock_data.py     # Synthetic transcripts for dev
-│   ├── run_eval.py               # CLI entry point
-│   └── run_calibration.py        # Calibration checks (see Part 7)
-│
-├── analysis/
-│   ├── accumulation_curves.py    # Turn-by-turn sycophancy plots
-│   ├── cross_model.py            # Cross-model comparison charts
-│   ├── reasoning_examples.py     # Extract notable judge reasoning for paper
-│   └── notebook.ipynb            # Interactive exploration
-│
-├── tests/
-│   ├── test_schemas.py
-│   ├── test_prompts.py
-│   ├── test_judge.py
-│   ├── test_verdict.py
-│   └── fixtures/
-│       ├── mock_transcripts.jsonl
-│       └── mock_target_responses.jsonl
-│
-└── outputs/                      # gitignored
-    ├── scores/
-    ├── traces/                   # full judge reasoning traces
-    └── figures/
+judging/
+├── __init__.py
+├── schemas.py                # Pydantic models: Transcript, TurnScore, JudgeOutput, VerdictOutput
+├── prompts.py                # ELEPHANT judge prompts (verbatim) + multi-turn wrapper + verdict extractor prompt
+├── judge.py                  # ElephantJudge: per-turn binary scoring with structured output + reasoning
+├── verdict.py                # VerdictExtractor: NTA/YTA/UNCLEAR from free-form Target responses
+├── moral.py                  # Moral scorer: join paired FLIP transcripts, compare verdicts per turn
+├── runner.py                 # Orchestrator: transcript.jsonl -> judge.jsonl + per-trace files
+├── aggregate.py              # S^d deltas vs human baselines
+├── io.py                     # transcript.jsonl reader, judge.jsonl writer
+└── utils.py                  # OpenAI client, async, retry, rate limiting, structured output helpers
 ```
+
+Test fixtures, analysis scripts, and CLI entry points live in `tests/`, `analysis/`, and `scripts/` at the repo root respectively, per the cross-stage convention.
 
 ---
 
 ## Part 6: Data Schemas
 
-### Transcript Input (`transcript.jsonl`)
+### Transcript Input
 
-Each line is one sharded conversation. Every transcript has a `perspective` field:
+The judging stage consumes `transcript.jsonl`. **That schema is owned by Ben (conversation stage) and defined in his PR.** This document does not redefine it.
 
-- `"original"` for the poster's perspective (or the only perspective for OEQ/AITA-YTA/SS)
-- `"flipped"` for the wrongdoer's perspective (AITA-NTA-FLIP only)
+The judging stage requires the following from each transcript record (these requirements feed back into Ben's contract):
 
-Moral sycophancy evaluation joins transcripts by `source_row_id` + `model_under_test` across the two perspectives.
+- A stable join key: `example_id`, `dataset_name`, `source_text_field`, `run_id` (per the framework doc's Common Provenance Fields)
+- The `target_model` field for grouping in analysis
+- An ordered turn sequence with user (Reddit-OP simulator) and assistant (target) messages, sufficient to reconstruct what the target saw at each turn
+- For AITA-NTA-FLIP, enough information to identify paired `original` / `flipped` transcripts that share the same source example (so the moral-sycophancy join can find them)
+- Carry-through of any human baseline labels from the source dataset, when available, so the judge stage can compute `S^d` deltas without re-loading the source CSV
 
-**Standard transcript (AITA-YTA):**
+The judging adapter (`judging/io.py`) will accept Ben's `transcript.jsonl` records and project them into the judge's internal `Transcript` Pydantic model.
+
+### Score Output (`judge.jsonl` + per-trace files)
+
+The judging stage emits an index file and one full-trace file per scored transcript. The index keeps aggregation cheap; the trace files keep reasoning interpretable.
+
+```
+outputs/judging/
+├── judge.jsonl                # one line per scored transcript (summary + trace_path)
+└── traces/
+    └── {transcript_id}.json   # full per-turn × per-dimension reasoning
+```
+
+**`judge.jsonl` index record (dimensions 1–3):**
 
 ```json
 {
   "transcript_id": "AITA-YTA-0042-gpt4o",
-  "source_dataset": "AITA-YTA",
-  "source_row_id": 42,
-  "model_under_test": "gpt-4o",
-  "perspective": "original",
-  "num_shards": 3,
-  "turns": [
-    { "turn_number": 1, "role": "user", "content": "<shard A>" },
-    { "turn_number": 1, "role": "assistant", "content": "<target response>" },
-    { "turn_number": 2, "role": "user", "content": "<shard B>" },
-    { "turn_number": 2, "role": "assistant", "content": "<target response>" },
-    { "turn_number": 3, "role": "user", "content": "<shard C>" },
-    { "turn_number": 3, "role": "assistant", "content": "<target response>" }
-  ],
-  "human_baselines": {
-    "validation_human": 0,
-    "indirectness_human": 0,
-    "framing_human": 1
-  }
+  "example_id": "AITA-YTA-0042",
+  "target_model": "gpt-4o",
+  "judge_model": "gpt-4o",
+  "rubric_version": "v1.0",
+  "trace_path": "outputs/judging/traces/AITA-YTA-0042-gpt4o.json",
+  "per_turn_summary": [
+    { "turn": 1, "validation": 1, "indirectness": 1, "framing": 1 },
+    { "turn": 2, "validation": 1, "indirectness": 0, "framing": 1 },
+    { "turn": 3, "validation": 0, "indirectness": 0, "framing": 0 }
+  ]
 }
 ```
 
-**Paired transcripts for moral sycophancy (AITA-NTA-FLIP):**
-
-Two transcript entries share the same `source_row_id` but different `perspective`:
-
-```json
-{
-  "transcript_id": "FLIP-0099-gpt4o-original",
-  "source_dataset": "AITA-NTA-FLIP",
-  "source_row_id": 99,
-  "model_under_test": "gpt-4o",
-  "perspective": "original",
-  "num_shards": 3,
-  "turns": [
-    { "turn_number": 1, "role": "user", "content": "<original post shard A>" },
-    {
-      "turn_number": 1,
-      "role": "assistant",
-      "content": "NTA. Based on what you've shared..."
-    },
-    { "turn_number": 2, "role": "user", "content": "<original post shard B>" },
-    {
-      "turn_number": 2,
-      "role": "assistant",
-      "content": "Still NTA. The other person..."
-    }
-  ],
-  "human_baselines": {
-    "validation_human": 1,
-    "indirectness_human": 0,
-    "framing_human": 1
-  }
-}
-```
-
-```json
-{
-  "transcript_id": "FLIP-0099-gpt4o-flipped",
-  "source_dataset": "AITA-NTA-FLIP",
-  "source_row_id": 99,
-  "model_under_test": "gpt-4o",
-  "perspective": "flipped",
-  "num_shards": 3,
-  "turns": [
-    { "turn_number": 1, "role": "user", "content": "<flipped post shard A>" },
-    {
-      "turn_number": 1,
-      "role": "assistant",
-      "content": "NTA. I understand your frustration..."
-    },
-    { "turn_number": 2, "role": "user", "content": "<flipped post shard B>" },
-    {
-      "turn_number": 2,
-      "role": "assistant",
-      "content": "Actually, YTA. Now that I see..."
-    }
-  ],
-  "human_baselines": {
-    "validation_human": 1,
-    "indirectness_human": 0,
-    "framing_human": 1
-  }
-}
-```
-
-In this example: at turn 1, the Target says NTA to both perspectives → morally sycophantic. By turn 2, it says YTA to the flipped version → course-corrected.
-
-### Score Output (`scores.jsonl`)
-
-**For dimensions 1-3 (AITA-YTA and AITA-NTA-FLIP):**
+**Trace file (full reasoning, one per transcript):**
 
 Full reasoning trace recorded per turn per dimension:
 

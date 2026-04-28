@@ -1,7 +1,7 @@
 [project]
-name = "elephant-eval"
+name = "judging"
 version = "0.1.0"
-description = "Multi-turn social sycophancy evaluation extending the ELEPHANT benchmark"
+description = "Judging stage of the multi-turn ELEPHANT pipeline"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.30",
@@ -25,7 +25,8 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["judging*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

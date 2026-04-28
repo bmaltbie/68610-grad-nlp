@@ -18,5 +18,13 @@ outputs/
 .vscode/
 .idea/
 
+# Coding agent configs (per team agreement)
+CLAUDE.md
+docs/CLAUDE.md
+.claude/
+.cursor/
+.cursorrules
+.github/copilot-instructions.md
+
 # OS
 .DS_Store
