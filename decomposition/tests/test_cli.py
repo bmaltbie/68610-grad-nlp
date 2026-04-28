@@ -384,6 +384,27 @@ def test_cli_anthropic_logs_bad_rows_and_continues(tmp_path: Path) -> None:
     assert "not found" in error_rows[0]["message"]
 
 
+def test_cli_anthropic_logs_provider_error_and_continues(tmp_path: Path) -> None:
+    first = "AITA? First. Second. Third."
+    second = "AITA? Alpha. Beta. Gamma."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\nex2,%s\n" % (first, second), encoding="utf-8")
+    client = FakeAnthropicClient([RuntimeError("rate limit"), anthropic_message(valid_payload(second))])
+    args = anthropic_args(tmp_path, dataset, client)
+
+    result = cli.anthropic_command(args)
+
+    assert result == 0
+    rows = read_jsonl(args.out)
+    assert [row["example_id"] for row in rows] == ["ex2"]
+    error_rows = read_jsonl(args.errors)
+    assert len(error_rows) == 1
+    assert error_rows[0]["example_id"] == "ex1"
+    assert error_rows[0]["attempts"] == 1
+    assert error_rows[0]["retryable"] is False
+    assert error_rows[0]["retry_errors"][0]["message"] == "rate limit"
+
+
 def test_cli_anthropic_logs_malformed_json(tmp_path: Path) -> None:
     raw = "AITA? First. Second. Third."
     dataset = tmp_path / "data.csv"
