@@ -1,6 +1,14 @@
 import json
 
-from decomposition.anthropic_io import SEGMENTATION_OUTPUT_SCHEMA, call_anthropic, request_to_anthropic_messages
+import pytest
+
+from decomposition.anthropic_io import (
+    SEGMENTATION_OUTPUT_SCHEMA,
+    AnthropicRunError,
+    call_anthropic,
+    raise_for_incomplete_response,
+    request_to_anthropic_messages,
+)
 
 
 class FakeMessages:
@@ -78,3 +86,25 @@ def test_anthropic_schema_requires_one_based_atomic_unit_ids() -> None:
     assert "unit_id" in atomic_item["required"]
     assert "1-based" in atomic_item["properties"]["unit_id"]["description"]
     assert "Never include 0" in shard_unit_ids["description"]
+
+
+def test_empty_anthropic_content_is_wrapped_then_rejected_as_incomplete() -> None:
+    fake_response = {
+        "id": "msg_empty",
+        "model": "claude-test",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": ""}],
+    }
+    request = {
+        "request_id": "req1",
+        "messages": [
+            {"role": "system", "content": "segment"},
+            {"role": "user", "content": "AITA? First. Second. Third."},
+        ],
+    }
+
+    wrapped = call_anthropic(request, model="claude-test", client=FakeClient(fake_response))
+
+    assert wrapped["model_output"] == ""
+    with pytest.raises(AnthropicRunError, match="no text content"):
+        raise_for_incomplete_response(wrapped)

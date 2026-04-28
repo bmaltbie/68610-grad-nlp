@@ -93,7 +93,7 @@ SEGMENTATION_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def create_anthropic_client(api_key: Optional[str] = None) -> Any:
+def create_anthropic_client(api_key: Optional[str] = None, max_retries: Optional[int] = None) -> Any:
     """Create the native Anthropic SDK client using ANTHROPIC_API_KEY by default."""
     resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     if not resolved_key:
@@ -102,7 +102,9 @@ def create_anthropic_client(api_key: Optional[str] = None) -> Any:
         from anthropic import Anthropic
     except ImportError as exc:  # pragma: no cover - dependency is installed in normal project runs.
         raise AnthropicRunError("anthropic package is not installed.") from exc
-    return Anthropic(api_key=resolved_key)
+    if max_retries is None:
+        return Anthropic(api_key=resolved_key)
+    return Anthropic(api_key=resolved_key, max_retries=max_retries)
 
 
 def call_anthropic(
@@ -125,6 +127,23 @@ def call_anthropic(
     Anthropic owns generation. Local ingest still owns source-span authority.
     """
     anthropic_client = client or create_anthropic_client()
+    kwargs = anthropic_message_kwargs(
+        request,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    message = anthropic_client.messages.create(**kwargs)
+    return response_from_anthropic_message(request, message, model=model, created_at=created_at)
+
+
+def anthropic_message_kwargs(
+    request: Dict[str, Any],
+    model: str = DEFAULT_ANTHROPIC_MODEL,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = 0.0,
+) -> Dict[str, Any]:
+    """Build Anthropic Messages API kwargs for realtime and batch calls."""
     system, messages = request_to_anthropic_messages(request)
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -142,8 +161,7 @@ def call_anthropic(
     }
     if system:
         kwargs["system"] = system
-    message = anthropic_client.messages.create(**kwargs)
-    return response_from_anthropic_message(request, message, model=model, created_at=created_at)
+    return kwargs
 
 
 def request_to_anthropic_messages(request: Dict[str, Any]) -> Tuple[str, List[Dict[str, str]]]:
@@ -175,8 +193,6 @@ def response_from_anthropic_message(
     """Normalize an Anthropic SDK response into the existing ingest wrapper shape."""
     message_dict = message_to_dict(message)
     content_text = content_blocks_to_text(_get(message, "content", []))
-    if not content_text.strip():
-        raise AnthropicRunError("Anthropic response contained no text content")
     return {
         "request_id": request.get("request_id"),
         "segmenter_model": str(message_dict.get("model") or _get(message, "model", None) or model),
@@ -193,6 +209,10 @@ def response_from_anthropic_message(
 def raise_for_incomplete_response(response: Dict[str, Any]) -> None:
     """Reject Anthropic responses that are known to be incomplete before parsing JSON."""
     stop_reason = response.get("stop_reason")
+    if not str(response.get("model_output", "")).strip():
+        raise AnthropicRunError(
+            "Anthropic response contained no text content. Fix: retry this row or inspect the raw response sidecar."
+        )
     if stop_reason == "max_tokens":
         raise AnthropicRunError(
             "Anthropic response stopped at max_tokens. Fix: increase --max-tokens and retry this row."

@@ -142,6 +142,8 @@ class ShardRecord:
     warnings: List[WarningItem] = field(default_factory=list)
     normalized_source_text: Optional[str] = None
     gold_label: Optional[str] = None
+    request_fingerprint: Optional[str] = None
+    content_fingerprint: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the record into the JSONL contract shape."""
@@ -163,6 +165,10 @@ class ShardRecord:
         }
         if self.gold_label is not None:
             data["gold_label"] = self.gold_label
+        if self.request_fingerprint is not None:
+            data["request_fingerprint"] = self.request_fingerprint
+        if self.content_fingerprint is not None:
+            data["content_fingerprint"] = self.content_fingerprint
         return data
 
     @classmethod
@@ -184,6 +190,8 @@ class ShardRecord:
             shards=[Shard.from_dict(item) for item in data.get("shards", [])],
             warnings=[WarningItem.from_dict(item) for item in data.get("warnings", [])],
             gold_label=data.get("gold_label"),
+            request_fingerprint=data.get("request_fingerprint"),
+            content_fingerprint=data.get("content_fingerprint"),
         )
 
 
