@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# VS Code settings
+.vscode/
+*.code-workspace
+
+# PDFs: We don't want to track generated PDF files as it can vary between builds and git doesn't handle binary files well.
+*.pdf
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.xdv

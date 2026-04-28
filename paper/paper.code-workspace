@@ -1,0 +1,61 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "latex-workshop.latex.tools": [
+      {
+        "name": "latexmk-pdflatex",
+        "command": "latexmk",
+        "args": [
+          "-pdf",
+          "-synctex=1",
+          "-interaction=nonstopmode",
+          "-file-line-error",
+          "-outdir=%OUTDIR%",
+          "%DOC%"
+        ]
+      },
+      {
+        "name": "pdflatex",
+        "command": "pdflatex",
+        "args": [
+          "-synctex=1",
+          "-interaction=nonstopmode",
+          "-file-line-error",
+          "-output-directory=%OUTDIR%",
+          "%DOC%"
+        ]
+      },
+      {
+        "name": "bibtex",
+        "command": "bibtex",
+        "args": [
+          "%DOCFILE%"
+        ]
+      }
+    ],
+    "latex-workshop.latex.recipes": [
+      {
+        "name": "latexmk (pdfLaTeX)",
+        "tools": [
+          "latexmk-pdflatex"
+        ]
+      },
+      {
+        "name": "pdflatex -> bibtex -> pdflatex x2",
+        "tools": [
+          "pdflatex",
+          "bibtex",
+          "pdflatex",
+          "pdflatex"
+        ]
+      }
+    ],
+    "latex-workshop.latex.recipe.default": "latexmk (pdfLaTeX)",
+    "latex-workshop.latex.build.forceRecipeUsage": true,
+    "latex-workshop.latex.build.fromWorkspaceFolder": false
+  }
+}
