@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 import argparse
+import csv
 import json
 import sys
 
@@ -133,20 +135,29 @@ def generate_requests_command(args: argparse.Namespace) -> int:
 def anthropic_command(args: argparse.Namespace) -> int:
     """Call Anthropic directly and write validated shard records."""
     client = getattr(args, "_anthropic_client", None) or create_anthropic_client()
+    progress_mode = _resolve_progress_mode(getattr(args, "progress", "auto"))
+    total = _count_dataset_rows(args.dataset, args.source_field, args.limit) if progress_mode != "off" else None
     _ensure_parent(args.out)
     _ensure_parent(args.errors)
     if args.raw_responses:
         _ensure_parent(args.raw_responses)
     written = 0
     errors = 0
+    raw_responses = 0
+    error_types: Counter = Counter()
+    progress = _progress_bar(progress_mode, total)
     raw_handle = args.raw_responses.open("w", encoding="utf-8") if args.raw_responses else None
     try:
         with args.out.open("w", encoding="utf-8") as out_handle, args.errors.open(
             "w", encoding="utf-8"
         ) as err_handle:
-            for example in load_dataset(args.dataset, args.dataset_name, args.source_field, args.limit):
+            for index, example in enumerate(
+                load_dataset(args.dataset, args.dataset_name, args.source_field, args.limit),
+                start=1,
+            ):
                 request: Optional[Dict[str, Any]] = None
                 response: Optional[Dict[str, Any]] = None
+                status = "error"
                 try:
                     request = build_request(
                         example,
@@ -164,10 +175,12 @@ def anthropic_command(args: argparse.Namespace) -> int:
                     )
                     if raw_handle:
                         _write_jsonl(raw_handle, response)
+                    raw_responses += 1
                     raise_for_incomplete_response(response)
                     record = record_from_response(request, response)
                     _write_jsonl(out_handle, record.to_dict())
                     written += 1
+                    status = "ok"
                 except Exception as exc:  # noqa: BLE001 - batch tool logs row-level failures.
                     error = _run_error(example, args.run_id, args.segmentation_version, "anthropic", exc)
                     if request:
@@ -177,10 +190,14 @@ def anthropic_command(args: argparse.Namespace) -> int:
                         error["provider_message_id"] = response.get("provider_message_id")
                     _write_jsonl(err_handle, error)
                     errors += 1
+                    error_types[str(error["error_type"])] += 1
+                finally:
+                    _progress_update(progress, progress_mode, index, total, example.example_id, status, written, errors)
     finally:
+        _progress_close(progress)
         if raw_handle:
             raw_handle.close()
-    print("written=%d errors=%d" % (written, errors))
+    _print_anthropic_summary(args, written, errors, raw_responses, error_types)
     return 0
 
 
@@ -338,6 +355,12 @@ def _parser() -> argparse.ArgumentParser:
         default=0.0,
         help="sampling temperature for Anthropic generation",
     )
+    anthropic_parser.add_argument(
+        "--progress",
+        choices=("auto", "bar", "log", "off"),
+        default="auto",
+        help="progress display: auto picks bar for terminals and log for redirected output",
+    )
     anthropic_parser.set_defaults(func=anthropic_command)
 
     ingest_parser = subparsers.add_parser(
@@ -394,6 +417,95 @@ def _write_jsonl(handle: Any, data: Dict[str, Any]) -> None:
     handle.write(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def _count_dataset_rows(dataset_path: Path, source_text_field: str, limit: Optional[int]) -> int:
+    """Count rows once so progress output can show a useful ETA."""
+    with dataset_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise DatasetError(
+                "dataset has no header: %s. Fix: provide a CSV with a header row containing the source text column."
+                % dataset_path
+            )
+        if source_text_field not in reader.fieldnames:
+            raise DatasetError(
+                "source field %r not found in %s; fields=%s. Fix: pass one of these names to --source-field."
+                % (source_text_field, dataset_path, reader.fieldnames)
+            )
+        count = 0
+        for count, _row in enumerate(reader, start=1):
+            if limit is not None and count >= limit:
+                return limit
+        return count
+
+
+def _resolve_progress_mode(progress: str) -> str:
+    """Choose progress behavior that works in terminals and non-interactive logs."""
+    if progress != "auto":
+        return progress
+    return "bar" if sys.stderr.isatty() else "log"
+
+
+def _progress_bar(progress_mode: str, total: Optional[int]) -> Any:
+    """Create a tqdm progress bar when requested."""
+    if progress_mode != "bar":
+        return None
+    from tqdm import tqdm
+
+    return tqdm(total=total, desc="Sharding", unit="post", file=sys.stderr)
+
+
+def _progress_update(
+    progress: Any,
+    progress_mode: str,
+    index: int,
+    total: Optional[int],
+    example_id: str,
+    status: str,
+    written: int,
+    errors: int,
+) -> None:
+    """Report per-row progress without mixing artifact output into stdout."""
+    if progress_mode == "off":
+        return
+    if progress_mode == "bar" and progress:
+        progress.set_postfix(ok=written, errors=errors, last=example_id, status=status)
+        progress.update(1)
+        return
+    if progress_mode == "log":
+        total_text = str(total) if total is not None else "?"
+        print(
+            "sharding %d/%s example_id=%s status=%s ok=%d errors=%d"
+            % (index, total_text, example_id, status, written, errors),
+            file=sys.stderr,
+        )
+
+
+def _progress_close(progress: Any) -> None:
+    """Close a progress bar if one was created."""
+    if progress:
+        progress.close()
+
+
+def _print_anthropic_summary(
+    args: argparse.Namespace,
+    written: int,
+    errors: int,
+    raw_responses: int,
+    error_types: Counter,
+) -> None:
+    """Print the final Anthropic run summary with artifact paths and top failures."""
+    print("written=%d errors=%d raw_responses=%d" % (written, errors, raw_responses))
+    if error_types:
+        print("top_errors:")
+        for error_type, count in error_types.most_common(5):
+            print("  %s: %d" % (error_type, count))
+    print("outputs:")
+    print("  shards: %s" % args.out)
+    print("  errors: %s" % args.errors)
+    if args.raw_responses:
+        print("  raw: %s" % args.raw_responses)
+
+
 def _run_error(example: Any, run_id: str, segmentation_version: str, stage: str, exc: Exception) -> Dict[str, Any]:
     """Build a row-level sidecar error without losing provenance."""
     error = {
@@ -447,12 +559,14 @@ def _hint_for_exception(exc: Exception) -> Optional[str]:
         return "Check ANTHROPIC_API_KEY, --model, --max-tokens, and the raw response sidecar for the failed row."
     if isinstance(exc, FileNotFoundError):
         return "Check the path exists. For prompts, confirm --segmentation-version has a matching prompts/<version>.txt file."
+    if "text not found after offset" in str(exc):
+        return "Make the model return exact verbatim atomic-unit text in source order; local code computes offsets."
+    if "unit 0" in str(exc) or "zero-based" in str(exc):
+        return "Use 1-based atomic unit ids: the first atomic unit is 1, and shard unit_ids must reference those ids."
     if isinstance(exc, LLMIngestError):
         return "Ensure each response has request_id, atomic_units, shards, and verbatim source text."
     if isinstance(exc, ValidationError):
         return "Run the validate command on the artifact and inspect the listed field-level contract failures."
-    if "text not found after offset" in str(exc):
-        return "Make the model return exact verbatim atomic-unit text in source order; local code computes offsets."
     if "source text is empty" in str(exc):
         return "Drop the empty row or choose a --source-field that contains the raw post text."
     return None

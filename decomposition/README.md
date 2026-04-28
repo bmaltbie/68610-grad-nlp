@@ -76,6 +76,7 @@ uv run --project decomposition python -m decomposition.cli anthropic \
   --run-id mt-elephant-pilot-v1 \
   --model claude-sonnet-4-5 \
   --limit 20 \
+  --progress auto \
   --out decomposition/artifacts/shards.anthropic.jsonl \
   --errors decomposition/artifacts/run_errors.anthropic.jsonl \
   --raw-responses decomposition/artifacts/seg_v1_anthropic_responses.jsonl
@@ -83,7 +84,8 @@ uv run --project decomposition python -m decomposition.cli anthropic \
 
 The Anthropic command is the normal human path for LLM-assisted segmentation.
 It still uses local source-span alignment before writing `shards.jsonl`; model
-offsets are never trusted.
+offsets are never trusted. Progress defaults to `auto`, which shows a `tqdm`
+bar in an interactive terminal and line-by-line progress in redirected logs.
 
 Generate provider-neutral LLM requests for replay, batch runs, or debugging:
 

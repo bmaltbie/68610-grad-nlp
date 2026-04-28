@@ -1,6 +1,6 @@
 import json
 
-from decomposition.anthropic_io import call_anthropic, request_to_anthropic_messages
+from decomposition.anthropic_io import SEGMENTATION_OUTPUT_SCHEMA, call_anthropic, request_to_anthropic_messages
 
 
 class FakeMessages:
@@ -69,3 +69,12 @@ def test_call_anthropic_uses_structured_output_extra_body() -> None:
     assert wrapped["segmenter_model"] == "claude-test"
     assert wrapped["model_output"] == json.dumps(response_payload)
     assert wrapped["raw_response"]["id"] == "msg_test"
+
+
+def test_anthropic_schema_requires_one_based_atomic_unit_ids() -> None:
+    atomic_item = SEGMENTATION_OUTPUT_SCHEMA["properties"]["atomic_units"]["items"]
+    shard_unit_ids = SEGMENTATION_OUTPUT_SCHEMA["properties"]["shards"]["items"]["properties"]["unit_ids"]
+
+    assert "unit_id" in atomic_item["required"]
+    assert "1-based" in atomic_item["properties"]["unit_id"]["description"]
+    assert "Never include 0" in shard_unit_ids["description"]

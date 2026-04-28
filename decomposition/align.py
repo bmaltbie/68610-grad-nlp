@@ -39,8 +39,18 @@ def align_units(raw_source_text: str, unit_specs: Iterable[UnitSpec]) -> List[At
         start = raw_source_text.find(text, cursor)
         if start < 0:
             raise AlignmentError(
-                "unit %d text not found after offset %d. Fix: return exact source text in source order; do not summarize or rewrite."
-                % (index, cursor)
+                (
+                    "unit %d text not found after offset %d. Offending unit text: %r. "
+                    "Raw text near offset %d: %r. Fix: copy exact Unicode characters from the source in source order; "
+                    "do not normalize curly quotes/apostrophes, summarize, or rewrite."
+                )
+                % (
+                    index,
+                    cursor,
+                    _clip(text, 180),
+                    cursor,
+                    _clip(raw_source_text[max(0, cursor - 80) : cursor + 180], 260),
+                )
             )
         end = start + len(text)
         units.append(
@@ -54,3 +64,10 @@ def align_units(raw_source_text: str, unit_specs: Iterable[UnitSpec]) -> List[At
         )
         cursor = end
     return units
+
+
+def _clip(value: str, limit: int) -> str:
+    """Keep alignment diagnostics readable for long posts."""
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."

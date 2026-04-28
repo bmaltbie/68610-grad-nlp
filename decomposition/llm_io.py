@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+import html
 import json
+import re
+import unicodedata
 
-from .align import UnitSpec, align_units
+from .align import AlignmentError, UnitSpec, align_units
 from .datasets import DatasetExample
 from .deterministic import SEGMENTATION_VERSION, utc_now
-from .schema import Shard, ShardRecord, WarningItem, validate_record
+from .schema import AtomicUnit, Shard, ShardRecord, WarningItem, validate_record
 
 
 class LLMIngestError(Exception):
@@ -61,7 +64,9 @@ def build_request(
             {"role": "user", "content": example.raw_source_text},
         ],
         "expected_response": {
-            "atomic_units": [{"text": "verbatim source span", "section_type": "title|body|tldr|edit|update|other"}],
+            "atomic_units": [
+                {"unit_id": 1, "text": "verbatim source span", "section_type": "title|body|tldr|edit|update|other"}
+            ],
             "shards": [{"unit_ids": [1, 2], "section_role": "setup|main_event|..."}],
             "warnings": [],
         },
@@ -76,14 +81,18 @@ def record_from_response(request: Dict[str, Any], response: Dict[str, Any]) -> S
     whether the resulting record can enter shards.jsonl.
     """
     payload = _payload(response)
-    unit_specs = [_unit_spec(item) for item in payload.get("atomic_units", [])]
+    unit_specs = _unit_specs_from_payload(_list_payload_field(payload, "atomic_units"))
     if not unit_specs:
         raise LLMIngestError(
             "response contains no atomic_units. Fix: include a non-empty atomic_units list with verbatim source text."
         )
-    atomic_units = align_units(str(request["raw_source_text"]), unit_specs)
-    shards = _shards_from_payload(str(request["raw_source_text"]), atomic_units, payload.get("shards", []))
-    warnings = [_warning_item(item) for item in payload.get("warnings", [])]
+    raw_source_text = str(request["raw_source_text"])
+    atomic_units, alignment_warnings = _align_units_for_ingest(raw_source_text, unit_specs)
+    shard_items, shard_warnings = _normalize_shard_references(_list_payload_field(payload, "shards"), len(atomic_units))
+    shards = _shards_from_payload(raw_source_text, atomic_units, shard_items)
+    warnings = [_warning_item(item) for item in _list_payload_field(payload, "warnings")]
+    warnings.extend(alignment_warnings)
+    warnings.extend(shard_warnings)
     record = ShardRecord(
         example_id=str(request["example_id"]),
         dataset_name=str(request["dataset_name"]),
@@ -156,13 +165,44 @@ def _payload(response: Dict[str, Any]) -> Dict[str, Any]:
     return response
 
 
+def _list_payload_field(payload: Dict[str, Any], field_name: str) -> List[Any]:
+    """Read a response field that must be a JSON array."""
+    value = payload.get(field_name, [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LLMIngestError("%s must be a list. Fix: return %s as a JSON array." % (field_name, field_name))
+    return value
+
+
+def _unit_specs_from_payload(items: Iterable[Any]) -> List[UnitSpec]:
+    """Normalize atomic unit response items and reject contradictory explicit ids."""
+    specs: List[UnitSpec] = []
+    for index, item in enumerate(items, start=1):
+        if isinstance(item, dict) and "unit_id" in item:
+            try:
+                unit_id = int(item["unit_id"])
+            except (TypeError, ValueError):
+                raise LLMIngestError(
+                    "atomic_units[%d].unit_id must be an integer. Fix: use 1-based source-order ids."
+                    % (index - 1)
+                )
+            if unit_id != index:
+                raise LLMIngestError(
+                    "atomic_units[%d].unit_id must be %d because unit_ids are 1-based source-order references; got %d. Fix: number atomic_units 1, 2, 3, ... in source order."
+                    % (index - 1, index, unit_id)
+                )
+        specs.append(_unit_spec(item))
+    return specs
+
+
 def _unit_spec(item: Any) -> UnitSpec:
     """Normalize one atomic unit response item into a UnitSpec."""
     if isinstance(item, str):
         return UnitSpec(text=item, section_type="body")
     if not isinstance(item, dict):
         raise LLMIngestError(
-            "atomic unit must be object or string. Fix: use {'text': '<verbatim span>', 'section_type': 'body'}."
+            "atomic unit must be object or string. Fix: use {'unit_id': 1, 'text': '<verbatim span>', 'section_type': 'body'}."
         )
     return UnitSpec(text=str(item.get("text", "")), section_type=str(item.get("section_type", "body")))
 
@@ -176,6 +216,198 @@ def _warning_item(item: Any) -> WarningItem:
             "warning must be object or string. Fix: use {'code', 'field', 'severity', 'message'}."
         )
     return WarningItem.from_dict(item)
+
+
+_TYPOGRAPHY_TRANSLATION = str.maketrans(
+    {
+        "’": "'",
+        "‘": "'",
+        "‛": "'",
+        "ʼ": "'",
+        "`": "'",
+        "´": "'",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "—": "-",
+        "–": "-",
+    }
+)
+
+
+def _align_units_for_ingest(raw: str, unit_specs: List[UnitSpec]) -> Tuple[List[AtomicUnit], List[WarningItem]]:
+    """Align model text, repairing only typography/spacing/control-character drift."""
+    try:
+        return align_units(raw, unit_specs), []
+    except AlignmentError:
+        pass
+
+    units: List[AtomicUnit] = []
+    cursor = 0
+    repair_count = 0
+    for index, spec in enumerate(unit_specs, start=1):
+        if not spec.text:
+            raise AlignmentError(
+                "unit %d has empty text. Fix: every atomic_units entry must contain verbatim source text."
+                % index
+            )
+        start = raw.find(spec.text, cursor)
+        if start >= 0:
+            end = start + len(spec.text)
+            text = spec.text
+        else:
+            repaired = _find_normalized_span(raw, spec.text, cursor)
+            if repaired is None:
+                raise AlignmentError(_alignment_error_message(raw, spec.text, index, cursor))
+            start, end, text = repaired
+            repair_count += 1
+        units.append(
+            AtomicUnit(
+                unit_id=index,
+                text=text,
+                start_char=start,
+                end_char=end,
+                section_type=spec.section_type,
+            )
+        )
+        cursor = end
+
+    warnings: List[WarningItem] = []
+    if repair_count:
+        warnings.append(
+            WarningItem(
+                code="normalized_alignment_text",
+                field="atomic_units.text",
+                severity="warning",
+                message=(
+                    "Local ingest repaired %d atomic unit text span(s) by mapping typography, "
+                    "whitespace, or invisible-control-character normalized model text back to exact raw source slices."
+                )
+                % repair_count,
+            )
+        )
+    return units, warnings
+
+
+def _find_normalized_span(raw: str, text: str, cursor: int) -> Optional[Tuple[int, int, str]]:
+    """Find a nearby raw span that is identical after harmless text normalization."""
+    target = _normalize_alignment_text(text)
+    if not target:
+        return None
+    max_start = min(len(raw), cursor + 600)
+    length_slack = 120
+    for start in range(cursor, max_start):
+        if _is_ignorable_alignment_char(raw[start]):
+            continue
+        min_end = start + max(1, len(text) - length_slack)
+        max_end = min(len(raw), start + len(text) + length_slack)
+        for end in range(min_end, max_end + 1):
+            candidate = raw[start:end]
+            normalized = _normalize_alignment_text(candidate)
+            if normalized == target:
+                return start, end, candidate
+            if len(normalized) > len(target) + 6 and not target.startswith(normalized):
+                break
+    return None
+
+
+def _normalize_alignment_text(value: str) -> str:
+    """Normalize only presentation differences that do not change story content."""
+    decoded = html.unescape(value)
+    without_controls = "".join(char for char in decoded if unicodedata.category(char) != "Cf")
+    normalized_typography = without_controls.translate(_TYPOGRAPHY_TRANSLATION)
+    return re.sub(r"\s+", " ", normalized_typography).strip()
+
+
+def _is_ignorable_alignment_char(value: str) -> bool:
+    """Treat separators and invisible format controls as gaps, not unit starts."""
+    return value.isspace() or unicodedata.category(value) == "Cf"
+
+
+def _alignment_error_message(raw: str, text: str, index: int, cursor: int) -> str:
+    """Build the same actionable diagnostic shape as strict alignment."""
+    return (
+        "unit %d text not found after offset %d. Offending unit text: %r. "
+        "Raw text near offset %d: %r. Fix: copy exact source text in source order; "
+        "do not summarize or rewrite."
+    ) % (
+        index,
+        cursor,
+        _clip(text, 180),
+        cursor,
+        _clip(raw[max(0, cursor - 80) : cursor + 180], 260),
+    )
+
+
+def _normalize_shard_references(shard_items: Iterable[Any], unit_count: int) -> Tuple[List[Any], List[WarningItem]]:
+    """Normalize safe shard reference mistakes without changing the source text."""
+    items = list(shard_items)
+    warnings: List[WarningItem] = []
+    all_unit_ids: List[int] = []
+    parsed_by_shard: List[List[int]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return items, warnings
+        try:
+            unit_ids = [int(value) for value in item.get("unit_ids", [])]
+        except (TypeError, ValueError):
+            return items, warnings
+        parsed_by_shard.append(unit_ids)
+        all_unit_ids.extend(unit_ids)
+
+    if 0 in all_unit_ids and sorted(all_unit_ids) == list(range(unit_count)):
+        normalized: List[Any] = []
+        normalized_by_shard: List[List[int]] = []
+        normalized_all_unit_ids: List[int] = []
+        for item, unit_ids in zip(items, parsed_by_shard):
+            normalized_item = dict(item)
+            normalized_ids = [unit_id + 1 for unit_id in unit_ids]
+            normalized_item["unit_ids"] = normalized_ids
+            normalized.append(normalized_item)
+            normalized_by_shard.append(normalized_ids)
+            normalized_all_unit_ids.extend(normalized_ids)
+        items = normalized
+        parsed_by_shard = normalized_by_shard
+        all_unit_ids = normalized_all_unit_ids
+        warnings.append(
+            WarningItem(
+                code="normalized_zero_based_unit_ids",
+                field="shards.unit_ids",
+                severity="warning",
+                message=(
+                    "Model returned zero-based shard unit_ids covering all atomic units exactly once; "
+                    "local ingest normalized them to one-based ids."
+                ),
+            )
+        )
+    elif 0 in all_unit_ids:
+        return items, warnings
+
+    expected = list(range(1, unit_count + 1))
+    if all_unit_ids != expected and sorted(all_unit_ids) == expected and all(parsed_by_shard):
+        maxima = [max(unit_ids) for unit_ids in parsed_by_shard]
+        if maxima == sorted(maxima) and len(set(maxima)) == len(maxima) and maxima[-1] == unit_count:
+            normalized = []
+            start_unit_id = 1
+            for item, end_unit_id in zip(items, maxima):
+                normalized_item = dict(item)
+                normalized_item["unit_ids"] = list(range(start_unit_id, end_unit_id + 1))
+                normalized.append(normalized_item)
+                start_unit_id = end_unit_id + 1
+            items = normalized
+            warnings.append(
+                WarningItem(
+                    code="normalized_noncontiguous_shards",
+                    field="shards.unit_ids",
+                    severity="warning",
+                    message=(
+                        "Model covered every atomic unit exactly once but used non-contiguous shard groups; "
+                        "local ingest projected them to contiguous chronological ranges using shard end boundaries."
+                    ),
+                )
+            )
+    return items, warnings
 
 
 def _shards_from_payload(raw: str, atomic_units: List[Any], shard_items: Iterable[Any]) -> List[Shard]:
@@ -195,6 +427,11 @@ def _shards_from_payload(raw: str, atomic_units: List[Any], shard_items: Iterabl
             raise LLMIngestError("shard %d has no unit_ids. Fix: assign one or more atomic unit ids." % index)
         missing = [unit_id for unit_id in unit_ids if unit_id not in by_id]
         if missing:
+            if 0 in missing:
+                raise LLMIngestError(
+                    "shard %d references unit 0, but shard unit_ids must be 1-based. The first atomic unit is 1, not 0. Fix: renumber shard unit_ids to atomic_units.unit_id values."
+                    % index
+                )
             raise LLMIngestError(
                 "shard %d references missing units %s. Fix: shard unit_ids must refer to emitted atomic_units."
                 % (index, missing)
@@ -210,3 +447,10 @@ def _shards_from_payload(raw: str, atomic_units: List[Any], shard_items: Iterabl
             )
         )
     return shards
+
+
+def _clip(value: str, limit: int) -> str:
+    """Keep diagnostics readable for long posts."""
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."

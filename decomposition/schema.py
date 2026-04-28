@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+import html
 import re
+import unicodedata
 
 SECTION_TYPES = {"title", "body", "tldr", "edit", "update", "other"}
 SECTION_ROLES = {
@@ -275,15 +277,15 @@ def _validate_atomic_units(record: ShardRecord, errors: List[str]) -> None:
             continue
         # Whitespace-only gaps preserve original formatting without losing story content.
         gap = raw[previous_end : unit.start_char]
-        if gap.strip():
-            errors.append("uncovered non-whitespace text before %s" % prefix)
+        if _semantic_gap_text(gap):
+            errors.append("uncovered non-whitespace text before %s: %r" % (prefix, _clip(gap.strip(), 120)))
         if raw[unit.start_char : unit.end_char] != unit.text:
             errors.append("%s text does not match raw_source_text slice" % prefix)
         previous_end = unit.end_char
 
     trailing = raw[previous_end:]
-    if trailing.strip():
-        errors.append("uncovered non-whitespace text after final atomic unit")
+    if _semantic_gap_text(trailing):
+        errors.append("uncovered non-whitespace text after final atomic unit: %r" % _clip(trailing.strip(), 120))
 
     _validate_other_warnings(record, errors)
 
@@ -331,3 +333,16 @@ def _validate_shards(record: ShardRecord, errors: List[str]) -> None:
     expected = [unit.unit_id for unit in record.atomic_units]
     if consumed != expected:
         errors.append("shards must partition atomic units exactly once and in order")
+
+
+def _clip(value: str, limit: int) -> str:
+    """Keep validation messages useful without dumping whole source posts."""
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
+def _semantic_gap_text(value: str) -> str:
+    """Return non-format, non-whitespace gap content that carries story text."""
+    decoded = html.unescape(value)
+    return "".join(char for char in decoded if not char.isspace() and unicodedata.category(char) != "Cf")

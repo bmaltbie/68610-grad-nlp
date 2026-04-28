@@ -24,19 +24,30 @@ SEGMENTATION_OUTPUT_SCHEMA: Dict[str, Any] = {
     "properties": {
         "atomic_units": {
             "type": "array",
+            "description": (
+                "Source-order atomic narrative units that partition the whole source post. "
+                "Every text value must be copied exactly from the source, including Unicode typography."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
+                    "unit_id": {
+                        "type": "integer",
+                        "description": "1-based source-order id. The first atomic unit is 1, never 0.",
+                    },
                     "text": {
                         "type": "string",
-                        "description": "Exact verbatim source span for one atomic narrative unit.",
+                        "description": (
+                            "Exact verbatim source span for one atomic narrative unit. "
+                            "Do not normalize quotes, apostrophes, punctuation, emoji, or capitalization."
+                        ),
                     },
                     "section_type": {
                         "type": "string",
                         "enum": sorted(SECTION_TYPES),
                     },
                 },
-                "required": ["text", "section_type"],
+                "required": ["unit_id", "text", "section_type"],
                 "additionalProperties": False,
             },
         },
@@ -47,6 +58,10 @@ SEGMENTATION_OUTPUT_SCHEMA: Dict[str, Any] = {
                 "properties": {
                     "unit_ids": {
                         "type": "array",
+                        "description": (
+                            "1-based contiguous chronological references to atomic_units.unit_id values. "
+                            "Never include 0, skip ids, duplicate ids, or move earlier units into later shards."
+                        ),
                         "items": {"type": "integer"},
                     },
                     "section_role": {

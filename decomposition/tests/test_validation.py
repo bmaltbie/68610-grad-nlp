@@ -85,8 +85,10 @@ def test_non_whitespace_gap_fails() -> None:
     record.atomic_units[1].text = "wo."
     record.shards[1].text = "wo."
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as exc_info:
         validate_record(record)
+
+    assert "uncovered non-whitespace text before atomic_units[1]: 'T'" in str(exc_info.value)
 
 
 def test_ineligible_record_passes_with_warning_and_empty_shards() -> None:

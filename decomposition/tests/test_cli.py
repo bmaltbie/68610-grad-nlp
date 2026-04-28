@@ -275,6 +275,7 @@ def anthropic_args(tmp_path: Path, dataset: Path, client: FakeAnthropicClient) -
         model="claude-test",
         max_tokens=4096,
         temperature=0.0,
+        progress="off",
         _anthropic_client=client,
     )
 
@@ -360,6 +361,36 @@ def test_cli_anthropic_logs_max_tokens_response(tmp_path: Path) -> None:
     assert error_rows[0]["stop_reason"] == "max_tokens"
     assert "max_tokens" in error_rows[0]["message"]
     assert len(read_jsonl(args.raw_responses)) == 1
+
+
+def test_cli_anthropic_log_progress_reports_counts(tmp_path: Path, capsys) -> None:
+    first = "AITA? First. Second. Third."
+    second = "AITA? Alpha. Beta. Gamma."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\nex2,%s\n" % (first, second), encoding="utf-8")
+    bad_payload = {
+        "atomic_units": [{"text": "AITA?", "section_type": "title"}, {"text": "rewritten text", "section_type": "body"}],
+        "shards": [
+            {"unit_ids": [1], "section_role": "setup"},
+            {"unit_ids": [2], "section_role": "main_event"},
+            {"unit_ids": [1], "section_role": "background_context"},
+            {"unit_ids": [2], "section_role": "current_conflict"},
+        ],
+        "warnings": [],
+    }
+    client = FakeAnthropicClient([anthropic_message(valid_payload(first)), anthropic_message(bad_payload)])
+    args = anthropic_args(tmp_path, dataset, client)
+    args.progress = "log"
+
+    result = cli.anthropic_command(args)
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "sharding 1/2 example_id=ex1 status=ok ok=1 errors=0" in captured.err
+    assert "sharding 2/2 example_id=ex2 status=error ok=1 errors=1" in captured.err
+    assert "written=1 errors=1 raw_responses=2" in captured.out
+    assert "top_errors:" in captured.out
+    assert "AlignmentError: 1" in captured.out
 
 
 def test_cli_anthropic_missing_key_returns_error(tmp_path: Path) -> None:
