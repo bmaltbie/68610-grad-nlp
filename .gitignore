@@ -1,31 +1,13 @@
-# Environment
-.env
-.env.example
 .venv/
-venv/
-
-# Python
 __pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-
-# Outputs
-outputs/
-
-# IDE
-.vscode/
-.idea/
-
-# Coding agent configs (per team agreement)
-CLAUDE.md
-docs/CLAUDE.md
-.claude/
-.cursor/
-.cursorrules
-.github/copilot-instructions.md
-
-# OS
+.pytest_cache/
+*.py[cod]
 .DS_Store
+.env
+.env.*
+!.env.example
+artifacts/
+
+# Local agent config
+AGENT.md
+CLAUDE.md

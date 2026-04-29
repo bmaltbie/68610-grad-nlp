@@ -1,0 +1,15 @@
+[project]
+name = "68610-grad-nlp-decomposition"
+version = "0.1.0"
+description = "Multi-turn ELEPHANT decomposition utilities"
+requires-python = ">=3.8"
+dependencies = [
+    "anthropic>=0.72.0",
+    "pytest>=7.4,<8.4",
+    "tqdm>=4.67.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".."]
+addopts = "-q"
