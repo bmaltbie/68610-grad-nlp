@@ -8,5 +8,9 @@ __pycache__/
 !.env.example
 artifacts/
 
+# Local artifact sharing bundles
+shared_shard_artifacts/
+shared_shard_artifacts.zip
+
 # Local agent config
 AGENT.md
