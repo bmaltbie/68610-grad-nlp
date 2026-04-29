@@ -64,7 +64,53 @@ uv run --project decomposition python -m decomposition.cli deterministic \
   --errors decomposition/artifacts/run_errors.deterministic.jsonl
 ```
 
-Run native Anthropic segmentation:
+Run native LLM segmentation. OpenAI is the default provider:
+
+```bash
+export OPENAI_API_KEY="..."
+
+uv run --project decomposition python -m decomposition.cli llm \
+  --dataset datasets/AITA-YTA.csv \
+  --dataset-name AITA-YTA \
+  --source-field prompt \
+  --run-id mt-elephant-pilot-v1 \
+  --provider openai \
+  --model gpt-5.4-mini \
+  --limit 20 \
+  --resume \
+  --concurrency 2 \
+  --llm-retries 1 \
+  --provider-max-retries 2 \
+  --raw-responses-mode append \
+  --progress auto \
+  --out decomposition/artifacts/shards.AITA-YTA.openai.jsonl \
+  --errors decomposition/artifacts/run_errors.AITA-YTA.openai.jsonl \
+  --raw-responses decomposition/artifacts/seg_v1_openai_responses.AITA-YTA.jsonl
+```
+
+The `llm` command is the normal human path for LLM-assisted segmentation. It
+uses OpenAI Responses with structured outputs by default, then still runs local
+source-span alignment before writing `shards.jsonl`; model offsets are never
+trusted. `gpt-5.4-mini` is the cost-conscious default for remaining datasets.
+Use `--model gpt-5.5` for a higher-quality smoke run or final strict pass.
+
+Progress defaults to `auto`, which shows a `tqdm` bar in an interactive
+terminal and line-by-line progress in redirected logs. Use `--resume` for long
+runs: validated rows in `--out` with matching request fingerprints are reused,
+and `--out.tmp` is also loaded by default so interrupted runs can keep paid-for
+validated rows. Existing rows without fingerprints are not trusted as cache
+hits. Failed or stale rows are queried again. `--llm-retries` controls extra
+attempts for model-output problems such as malformed JSON or source alignment
+failures; provider transport retries are delegated to the provider SDK through
+`--provider-max-retries`, `--openai-max-retries`, or `--anthropic-max-retries`.
+
+For live runs, start conservatively with `--concurrency 2`. Final
+`shards.jsonl` output still preserves dataset order even when provider calls
+finish out of order. Raw response sidecars default to append mode when
+`--resume` is enabled, or pass `--raw-responses-mode overwrite` to intentionally
+start a fresh sidecar.
+
+Anthropic remains available as a compatibility provider:
 
 ```bash
 export ANTHROPIC_API_KEY="..."
@@ -75,46 +121,23 @@ uv run --project decomposition python -m decomposition.cli anthropic \
   --source-field original_post \
   --run-id mt-elephant-pilot-v1 \
   --model claude-sonnet-4-5 \
-  --limit 20 \
   --resume \
-  --concurrency 2 \
-  --llm-retries 1 \
-  --anthropic-max-retries 2 \
-  --raw-responses-mode append \
-  --progress auto \
-  --out decomposition/artifacts/shards.anthropic.jsonl \
-  --errors decomposition/artifacts/run_errors.anthropic.jsonl \
-  --raw-responses decomposition/artifacts/seg_v1_anthropic_responses.jsonl
+  --out decomposition/artifacts/shards.AITA-NTA-OG.anthropic.jsonl \
+  --errors decomposition/artifacts/run_errors.AITA-NTA-OG.anthropic.jsonl \
+  --raw-responses decomposition/artifacts/seg_v1_anthropic_responses.AITA-NTA-OG.jsonl
 ```
-
-The Anthropic command is the normal human path for LLM-assisted segmentation.
-It still uses local source-span alignment before writing `shards.jsonl`; model
-offsets are never trusted. Progress defaults to `auto`, which shows a `tqdm`
-bar in an interactive terminal and line-by-line progress in redirected logs.
-Use `--resume` for long runs: validated rows in `--out` with matching request
-fingerprints are reused, and `--out.tmp` is also loaded by default so interrupted
-runs can keep paid-for validated rows. Existing rows without fingerprints are not
-trusted as cache hits. Failed or stale rows are queried again. `--llm-retries`
-controls extra attempts for model-output problems such as malformed JSON or
-source alignment failures; provider transport retries are delegated to the
-Anthropic SDK through `--anthropic-max-retries`.
-
-For live runs, start conservatively with `--concurrency 2`. Final
-`shards.jsonl` output still preserves dataset order even when Anthropic calls
-finish out of order. Raw response sidecars default to append mode when
-`--resume` is enabled, or pass `--raw-responses-mode overwrite` to intentionally
-start a fresh sidecar.
 
 Run several datasets from a JSONL manifest:
 
 ```jsonl
-{"dataset_name":"AITA-NTA-OG","dataset":"datasets/AITA-NTA-OG.csv","out":"decomposition/artifacts/shards.AITA-NTA-OG.anthropic.jsonl","errors":"decomposition/artifacts/run_errors.AITA-NTA-OG.anthropic.jsonl","raw_responses":"decomposition/artifacts/seg_v1_anthropic_responses.AITA-NTA-OG.jsonl"}
-{"dataset_name":"AITA-NTA-FLIP","dataset":"datasets/AITA-NTA-FLIP.csv","out":"decomposition/artifacts/shards.AITA-NTA-FLIP.anthropic.jsonl","errors":"decomposition/artifacts/run_errors.AITA-NTA-FLIP.anthropic.jsonl","raw_responses":"decomposition/artifacts/seg_v1_anthropic_responses.AITA-NTA-FLIP.jsonl"}
+{"dataset_name":"AITA-YTA","dataset":"datasets/AITA-YTA.csv","out":"decomposition/artifacts/shards.AITA-YTA.openai.jsonl","errors":"decomposition/artifacts/run_errors.AITA-YTA.openai.jsonl","raw_responses":"decomposition/artifacts/seg_v1_openai_responses.AITA-YTA.jsonl"}
+{"dataset_name":"AITA-NTA-FLIP","dataset":"datasets/AITA-NTA-FLIP.csv","out":"decomposition/artifacts/shards.AITA-NTA-FLIP.openai.jsonl","errors":"decomposition/artifacts/run_errors.AITA-NTA-FLIP.openai.jsonl","raw_responses":"decomposition/artifacts/seg_v1_openai_responses.AITA-NTA-FLIP.jsonl"}
 ```
 
 ```bash
-uv run --project decomposition python -m decomposition.cli anthropic-bulk \
-  --manifest decomposition/artifacts/anthropic_manifest.jsonl \
+uv run --project decomposition python -m decomposition.cli llm-bulk \
+  --manifest decomposition/artifacts/openai_manifest.jsonl \
+  --provider openai \
   --run-id mt-elephant-pilot-v1 \
   --resume \
   --concurrency 2
@@ -124,25 +147,26 @@ Manifest rows may omit `source_field` for known datasets. Defaults are:
 `AITA-NTA-OG=original_post`, `AITA-NTA-FLIP=flipped_story`,
 `AITA-YTA=prompt`, `OEQ=prompt`, and `SS=sentence`. The bulk runner also keeps
 a manifest-wide content cache, so byte-identical source text with matching
-prompt/schema/model/max-token/temperature settings can be reused across datasets
-after local revalidation.
+prompt/schema/provider/model/max-token/temperature settings can be reused across
+datasets after local revalidation.
 
-Use Anthropic Message Batches for asynchronous full-dataset processing:
+Use OpenAI Batch for asynchronous full-dataset processing:
 
 ```bash
-uv run --project decomposition python -m decomposition.cli anthropic-batch submit \
-  --manifest decomposition/artifacts/anthropic_manifest.jsonl \
+uv run --project decomposition python -m decomposition.cli openai-batch submit \
+  --manifest decomposition/artifacts/openai_manifest.jsonl \
   --run-id mt-elephant-pilot-v1 \
-  --batch-state decomposition/artifacts/anthropic_batch_state.json
+  --batch-state decomposition/artifacts/openai_batch_state.json
 
-uv run --project decomposition python -m decomposition.cli anthropic-batch collect \
-  --batch-state decomposition/artifacts/anthropic_batch_state.json
+uv run --project decomposition python -m decomposition.cli openai-batch collect \
+  --batch-state decomposition/artifacts/openai_batch_state.json
 ```
 
-Batch submit sends only cache misses. Batch collect can be rerun safely: it
+OpenAI batch submit streams a JSONL input file to disk, uploads it, and sends
+only cache misses to `/v1/responses`. Batch collect can be rerun safely: it
 loads existing final and temp shard artifacts, validates every successful result
 through the same local alignment path, and writes deterministic dataset-ordered
-outputs.
+outputs. Anthropic batch remains available through `anthropic-batch`.
 
 Generate provider-neutral LLM requests for replay, batch runs, or debugging:
 

@@ -282,6 +282,52 @@ class FakeBatchClient:
         self.messages = FakeBatchMessages(results)
 
 
+class FakeOpenAIResponses:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class FakeOpenAIFiles:
+    def __init__(self, output_text=""):
+        self.create_calls = []
+        self.output_text = output_text
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return {"id": "file_test"}
+
+    def content(self, file_id):
+        assert file_id == "file_output"
+        return self.output_text
+
+
+class FakeOpenAIBatches:
+    def __init__(self):
+        self.create_calls = []
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return {"id": "batch_test", "status": "validating", "input_file_id": kwargs["input_file_id"]}
+
+    def retrieve(self, batch_id):
+        return {"id": batch_id, "status": "completed", "output_file_id": "file_output"}
+
+
+class FakeOpenAIClient:
+    def __init__(self, responses=None, batch_output=""):
+        self.responses = FakeOpenAIResponses(responses or [])
+        self.files = FakeOpenAIFiles(batch_output)
+        self.batches = FakeOpenAIBatches()
+
+
 def anthropic_message(payload, stop_reason="end_turn"):
     return {
         "id": "msg_test",
@@ -289,6 +335,16 @@ def anthropic_message(payload, stop_reason="end_turn"):
         "stop_reason": stop_reason,
         "usage": {"input_tokens": 1, "output_tokens": 2},
         "content": [{"type": "text", "text": payload if isinstance(payload, str) else json.dumps(payload)}],
+    }
+
+
+def openai_response(payload, status="completed", model="gpt-test"):
+    return {
+        "id": "resp_test",
+        "model": model,
+        "status": status,
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+        "output_text": payload if isinstance(payload, str) else json.dumps(payload),
     }
 
 
@@ -336,6 +392,34 @@ def anthropic_args(tmp_path: Path, dataset: Path, client: FakeAnthropicClient) -
     )
 
 
+def openai_args(tmp_path: Path, dataset: Path, client: FakeOpenAIClient) -> argparse.Namespace:
+    return argparse.Namespace(
+        dataset=dataset,
+        dataset_name="AITA-NTA-OG",
+        source_field="original_post",
+        run_id="run1",
+        segmentation_version="seg_v1",
+        created_at="2026-04-29T00:00:00Z",
+        limit=None,
+        out=tmp_path / "openai_shards.jsonl",
+        errors=tmp_path / "openai_errors.jsonl",
+        raw_responses=tmp_path / "openai_raw_responses.jsonl",
+        provider="openai",
+        model="gpt-test",
+        max_tokens=4096,
+        temperature=0.0,
+        resume=False,
+        resume_include_temp=True,
+        raw_responses_mode=None,
+        concurrency=1,
+        llm_retries=1,
+        openai_max_retries=2,
+        provider_max_retries=2,
+        progress="off",
+        _openai_client=client,
+    )
+
+
 def test_cli_anthropic_happy_path_with_fake_client(tmp_path: Path) -> None:
     raw = "AITA? First. Second. Third."
     dataset = tmp_path / "data.csv"
@@ -353,6 +437,41 @@ def test_cli_anthropic_happy_path_with_fake_client(tmp_path: Path) -> None:
     raw_rows = read_jsonl(args.raw_responses)
     assert raw_rows[0]["provider"] == "anthropic"
     assert raw_rows[0]["raw_response"]["id"] == "msg_test"
+
+
+def test_cli_openai_happy_path_with_fake_client(tmp_path: Path) -> None:
+    raw = "AITA? First. Second. Third."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\n" % raw, encoding="utf-8")
+    args = openai_args(tmp_path, dataset, FakeOpenAIClient([openai_response(valid_payload(raw))]))
+
+    result = cli.openai_command(args)
+
+    assert result == 0
+    rows = read_jsonl(args.out)
+    assert len(rows) == 1
+    assert rows[0]["segmenter_model"] == "gpt-test"
+    assert len(rows[0]["shards"]) == 4
+    assert rows[0]["request_fingerprint"].startswith("sha256:")
+    assert read_jsonl(args.errors) == []
+    raw_rows = read_jsonl(args.raw_responses)
+    assert raw_rows[0]["provider"] == "openai"
+    assert raw_rows[0]["raw_response"]["id"] == "resp_test"
+
+
+def test_cli_llm_defaults_to_openai(tmp_path: Path) -> None:
+    raw = "AITA? First. Second. Third."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\n" % raw, encoding="utf-8")
+    client = FakeOpenAIClient([openai_response(valid_payload(raw), model="gpt-5.4-mini")])
+    args = openai_args(tmp_path, dataset, client)
+    args.provider = None
+    args.model = None
+
+    assert cli.llm_command(args) == 0
+
+    assert client.responses.calls[0]["model"] == "gpt-5.4-mini"
+    assert read_jsonl(args.out)[0]["segmenter_model"] == "gpt-5.4-mini"
 
 
 def test_cli_anthropic_logs_bad_rows_and_continues(tmp_path: Path) -> None:
@@ -695,19 +814,20 @@ def test_request_fingerprint_changes_when_semantics_change() -> None:
         "raw_source_text": "AITA? First. Second. Third.",
         "messages": [{"role": "system", "content": "prompt v1"}, {"role": "user", "content": "raw"}],
     }
-    base = cli._request_fingerprint(request, "claude-test", 4096, 0.0, output_schema={"type": "object"})
+    base = cli._request_fingerprint(request, "anthropic", "claude-test", 4096, 0.0, output_schema={"type": "object"})
 
-    assert cli._request_fingerprint(dict(request), "claude-test", 4096, 0.0, output_schema={"type": "object"}) == base
+    assert cli._request_fingerprint(dict(request), "anthropic", "claude-test", 4096, 0.0, output_schema={"type": "object"}) == base
 
     changed_raw = dict(request, raw_source_text="AITA? Different.")
     changed_prompt = dict(request, messages=[{"role": "system", "content": "prompt v2"}])
 
-    assert cli._request_fingerprint(changed_raw, "claude-test", 4096, 0.0, output_schema={"type": "object"}) != base
-    assert cli._request_fingerprint(changed_prompt, "claude-test", 4096, 0.0, output_schema={"type": "object"}) != base
-    assert cli._request_fingerprint(request, "claude-other", 4096, 0.0, output_schema={"type": "object"}) != base
-    assert cli._request_fingerprint(request, "claude-test", 8192, 0.0, output_schema={"type": "object"}) != base
-    assert cli._request_fingerprint(request, "claude-test", 4096, 0.2, output_schema={"type": "object"}) != base
-    assert cli._request_fingerprint(request, "claude-test", 4096, 0.0, output_schema={"type": "array"}) != base
+    assert cli._request_fingerprint(changed_raw, "anthropic", "claude-test", 4096, 0.0, output_schema={"type": "object"}) != base
+    assert cli._request_fingerprint(changed_prompt, "anthropic", "claude-test", 4096, 0.0, output_schema={"type": "object"}) != base
+    assert cli._request_fingerprint(request, "openai", "claude-test", 4096, 0.0, output_schema={"type": "object"}) != base
+    assert cli._request_fingerprint(request, "anthropic", "claude-other", 4096, 0.0, output_schema={"type": "object"}) != base
+    assert cli._request_fingerprint(request, "anthropic", "claude-test", 8192, 0.0, output_schema={"type": "object"}) != base
+    assert cli._request_fingerprint(request, "anthropic", "claude-test", 4096, 0.2, output_schema={"type": "object"}) != base
+    assert cli._request_fingerprint(request, "anthropic", "claude-test", 4096, 0.0, output_schema={"type": "array"}) != base
 
 
 def test_cli_anthropic_bulk_manifest_uses_default_source_field(tmp_path: Path) -> None:
@@ -940,6 +1060,147 @@ def test_cli_anthropic_batch_collect_handles_unordered_success_and_failures(tmp_
     assert len(read_jsonl(tmp_path / "batch_raw.jsonl")) == 3
 
 
+def test_cli_openai_batch_submit_writes_and_uploads_jsonl(tmp_path: Path) -> None:
+    raw = "AITA? First. Second. Third."
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,%s\n" % raw, encoding="utf-8")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "dataset": str(dataset),
+                "dataset_name": "AITA-NTA-OG",
+                "source_field": "original_post",
+                "out": str(tmp_path / "openai_batch_shards.jsonl"),
+                "errors": str(tmp_path / "openai_batch_errors.jsonl"),
+                "raw_responses": str(tmp_path / "openai_batch_raw.jsonl"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "openai_batch_state.json"
+    batch_input = tmp_path / "openai_batch_input.jsonl"
+    client = FakeOpenAIClient()
+    args = argparse.Namespace(
+        manifest=manifest,
+        batch_state=state,
+        batch_input=batch_input,
+        provider="openai",
+        run_id="run1",
+        segmentation_version="seg_v1",
+        created_at="2026-04-29T00:00:00Z",
+        limit=None,
+        model="gpt-test",
+        max_tokens=4096,
+        temperature=0.0,
+        llm_retries=1,
+        openai_max_retries=2,
+        provider_max_retries=2,
+        concurrency=1,
+        progress="off",
+        resume=True,
+        resume_include_temp=True,
+        raw_responses_mode=None,
+        _openai_client=client,
+    )
+
+    assert cli.openai_batch_submit_command(args) == 0
+
+    state_data = json.loads(state.read_text(encoding="utf-8"))
+    input_row = read_jsonl(batch_input)[0]
+    assert state_data["provider"] == "openai"
+    assert state_data["batch_id"] == "batch_test"
+    assert state_data["input_file_id"] == "file_test"
+    assert input_row["url"] == "/v1/responses"
+    assert input_row["body"]["text"]["format"]["type"] == "json_schema"
+    assert client.files.create_calls
+    assert client.batches.create_calls[0]["endpoint"] == "/v1/responses"
+
+
+def test_cli_openai_batch_collect_handles_unordered_success_and_failures(tmp_path: Path) -> None:
+    raws = [
+        "AITA? One. Two. Three.",
+        "AITA? Four. Five. Six.",
+        "AITA? Seven. Eight. Nine.",
+    ]
+    dataset = tmp_path / "data.csv"
+    dataset.write_text(
+        "id,original_post\n" + "\n".join("ex%d,%s" % (idx, raw) for idx, raw in enumerate(raws, start=1)) + "\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "dataset": str(dataset),
+                "dataset_name": "AITA-NTA-OG",
+                "source_field": "original_post",
+                "out": str(tmp_path / "openai_collect_shards.jsonl"),
+                "errors": str(tmp_path / "openai_collect_errors.jsonl"),
+                "raw_responses": str(tmp_path / "openai_collect_raw.jsonl"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "openai_collect_state.json"
+    submit_args = argparse.Namespace(
+        manifest=manifest,
+        batch_state=state,
+        batch_input=tmp_path / "openai_collect_input.jsonl",
+        provider="openai",
+        run_id="run1",
+        segmentation_version="seg_v1",
+        created_at="2026-04-29T00:00:00Z",
+        limit=None,
+        model="gpt-test",
+        max_tokens=4096,
+        temperature=0.0,
+        llm_retries=1,
+        openai_max_retries=2,
+        provider_max_retries=2,
+        concurrency=1,
+        progress="off",
+        resume=True,
+        resume_include_temp=True,
+        raw_responses_mode=None,
+        _openai_client=FakeOpenAIClient(),
+    )
+    assert cli.openai_batch_submit_command(submit_args) == 0
+    state_data = json.loads(state.read_text(encoding="utf-8"))
+    requests = state_data["requests"]
+    output_rows = [
+        {
+            "custom_id": requests[2]["custom_id"],
+            "response": {"status_code": 500, "body": {"error": {"message": "server boom"}}},
+        },
+        {
+            "custom_id": requests[0]["custom_id"],
+            "response": {"status_code": 200, "body": openai_response(valid_payload(raws[0]))},
+        },
+        {
+            "custom_id": requests[1]["custom_id"],
+            "response": {"status_code": 200, "body": openai_response("{not json}")},
+        },
+    ]
+    collect_args = argparse.Namespace(
+        batch_state=state,
+        raw_responses_mode="overwrite",
+        resume_include_temp=True,
+        openai_max_retries=2,
+        _openai_client=FakeOpenAIClient(batch_output="\n".join(json.dumps(row) for row in output_rows) + "\n"),
+    )
+
+    assert cli.openai_batch_collect_command(collect_args) == 0
+
+    assert [row["example_id"] for row in read_jsonl(tmp_path / "openai_collect_shards.jsonl")] == ["ex1"]
+    error_rows = read_jsonl(tmp_path / "openai_collect_errors.jsonl")
+    assert len(error_rows) == 2
+    assert {row["error_type"] for row in error_rows} == {"LLMIngestError", "OpenAIRunError"}
+    assert len(read_jsonl(tmp_path / "openai_collect_raw.jsonl")) == 2
+
+
 def test_cli_anthropic_log_progress_reports_counts(tmp_path: Path, capsys) -> None:
     first = "AITA? First. Second. Third."
     second = "AITA? Alpha. Beta. Gamma."
@@ -999,6 +1260,38 @@ def test_cli_anthropic_missing_key_returns_error(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "ANTHROPIC_API_KEY" in result.stderr
+    assert not out.exists()
+    assert not errors.exists()
+
+
+def test_cli_openai_missing_key_returns_error(tmp_path: Path) -> None:
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,original_post\nex1,AITA? First. Second. Third.\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("OPENAI_API_KEY", None)
+    out = tmp_path / "openai_shards.jsonl"
+    errors = tmp_path / "openai_errors.jsonl"
+
+    result = run_cli(
+        "openai",
+        "--dataset",
+        str(dataset),
+        "--dataset-name",
+        "AITA-NTA-OG",
+        "--source-field",
+        "original_post",
+        "--run-id",
+        "run1",
+        "--out",
+        str(out),
+        "--errors",
+        str(errors),
+        cwd=REPO_ROOT,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "OPENAI_API_KEY" in result.stderr
     assert not out.exists()
     assert not errors.exists()
 

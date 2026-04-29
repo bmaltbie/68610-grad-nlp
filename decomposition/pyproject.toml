@@ -5,6 +5,7 @@ description = "Multi-turn ELEPHANT decomposition utilities"
 requires-python = ">=3.8"
 dependencies = [
     "anthropic>=0.72.0",
+    "openai>=2.0.0",
     "pytest>=7.4,<8.4",
     "tqdm>=4.67.3",
 ]
