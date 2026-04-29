@@ -25,3 +25,15 @@
 **Effort:** M
 **Priority:** P2
 **Depends on:** Stable transcript contract, stable judge output contract, and a small representative transcript set
+
+### Decomposer Quality Eval Suite
+
+**What:** Add a locked decomposer quality eval suite comparing OpenAI and Anthropic decomposition outputs on exact-span preservation, shard naturalness, and fixed-four coverage.
+
+**Why:** Fake-client tests prove provider wiring and artifact validation, but they do not prove the default OpenAI decomposer produces research-quality shard boundaries.
+
+**Context:** The OpenAI-default migration should include a small live smoke run first. Once real OpenAI outputs exist, this eval suite should lock a representative corpus across AITA-NTA-OG, AITA-NTA-FLIP, AITA-YTA, OEQ, and SS so future prompt or model changes cannot silently degrade decomposition quality.
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** OpenAI provider path merged, representative rows from each supported dataset, and an agreed human or judge rubric

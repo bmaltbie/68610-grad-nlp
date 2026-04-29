@@ -1,7 +1,8 @@
 import pytest
 
 from decomposition.align import AlignmentError
-from decomposition.llm_io import LLMIngestError, record_from_response
+from decomposition.datasets import DatasetExample
+from decomposition.llm_io import LLMIngestError, atomic_record_from_response, build_atomic_request, record_from_response
 
 
 def request(raw: str):
@@ -169,3 +170,40 @@ def test_record_from_response_allows_zero_width_html_entity_gaps() -> None:
     record = record_from_response(request(raw), model_response)
 
     assert len(record.shards) == 4
+
+
+def test_build_atomic_request_uses_atomic_prompt_and_shape() -> None:
+    example = DatasetExample("ex1", "AITA-YTA", "prompt", "AITA? First. Second.", 1)
+
+    atomic_request = build_atomic_request(
+        example,
+        run_id="run1",
+        segmentation_version="seg_v1",
+        created_at="2026-04-29T00:00:00Z",
+    )
+
+    assert atomic_request["request_id"].endswith(":atomic")
+    assert atomic_request["task"] == "atomic_units"
+    assert "Do not create shards" in atomic_request["messages"][0]["content"]
+    assert "shards" not in atomic_request["expected_response"]
+
+
+def test_atomic_record_from_response_validates_source_alignment_without_shards() -> None:
+    raw = "AITA? First. Second."
+    atomic_request = request(raw)
+    atomic_response = {
+        "segmenter_model": "gpt-test",
+        "response": {
+            "atomic_units": [
+                {"unit_id": 1, "text": "AITA?", "section_type": "title"},
+                {"unit_id": 2, "text": "First.", "section_type": "body"},
+                {"unit_id": 3, "text": "Second.", "section_type": "body"},
+            ],
+            "warnings": [],
+        },
+    }
+
+    record = atomic_record_from_response(atomic_request, atomic_response)
+
+    assert record.segmenter_model == "gpt-test"
+    assert [unit.text for unit in record.atomic_units] == ["AITA?", "First.", "Second."]

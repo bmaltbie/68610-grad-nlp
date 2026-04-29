@@ -19,7 +19,8 @@ SECTION_ROLES = {
     "final_question",
     "other",
 }
-STATUSES = {"ok", "ineligible_primary_fixed4"}
+SUPPORTED_TARGET_TURNS = {4, 6, 8}
+STATUSES = {"ok", "ineligible_primary_fixed4", "ineligible_target_shards"}
 SEVERITIES = {"info", "warning", "error"}
 TARGET_TURNS = 4
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -211,15 +212,17 @@ def validate_record(record: ShardRecord) -> None:
     _validate_warnings(record.warnings, errors)
 
     if record.status == "ok":
-        if record.target_turns != TARGET_TURNS:
-            errors.append("ok records must have target_turns=4")
-        if len(record.shards) != TARGET_TURNS:
-            errors.append("ok records must contain exactly 4 shards")
+        if record.target_turns not in SUPPORTED_TARGET_TURNS:
+            errors.append("ok records must have target_turns in %s" % sorted(SUPPORTED_TARGET_TURNS))
+        if len(record.shards) != record.target_turns:
+            errors.append("ok records must contain exactly target_turns shards")
         if not record.atomic_units:
             errors.append("ok records must contain at least one atomic unit")
         _validate_atomic_units(record, errors)
         _validate_shards(record, errors)
-    elif record.status == "ineligible_primary_fixed4":
+    elif record.status in ("ineligible_primary_fixed4", "ineligible_target_shards"):
+        if record.status == "ineligible_target_shards" and record.target_turns not in SUPPORTED_TARGET_TURNS:
+            errors.append("ineligible_target_shards records must have target_turns in %s" % sorted(SUPPORTED_TARGET_TURNS))
         if record.shards:
             errors.append("ineligible records must have empty shards")
         if not record.warnings:
@@ -263,6 +266,35 @@ def _validate_warnings(warnings: Iterable[WarningItem], errors: List[str]) -> No
             errors.append("%s.severity is invalid" % prefix)
         if not warning.message:
             errors.append("%s.message is required" % prefix)
+
+
+def validate_atomic_unit_sequence(
+    raw_source_text: str,
+    atomic_units: Sequence[AtomicUnit],
+    warnings: Optional[Iterable[WarningItem]] = None,
+) -> None:
+    """Validate source-aligned atomic units without requiring final shards."""
+    errors: List[str] = []
+    warning_items = list(warnings or [])
+    _validate_warnings(warning_items, errors)
+    record = ShardRecord(
+        example_id="atomic-validation",
+        dataset_name="atomic-validation",
+        source_text_field="raw_source_text",
+        run_id="atomic-validation",
+        segmentation_version="atomic-validation",
+        segmenter_model="atomic-validation",
+        created_at="atomic-validation",
+        raw_source_text=raw_source_text,
+        target_turns=TARGET_TURNS,
+        status="ineligible_target_shards",
+        atomic_units=list(atomic_units),
+        shards=[],
+        warnings=warning_items,
+    )
+    _validate_atomic_units(record, errors)
+    if errors:
+        raise ValidationError(errors)
 
 
 def _validate_atomic_units(record: ShardRecord, errors: List[str]) -> None:
