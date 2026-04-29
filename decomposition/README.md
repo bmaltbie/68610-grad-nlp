@@ -110,6 +110,75 @@ finish out of order. Raw response sidecars default to append mode when
 `--resume` is enabled, or pass `--raw-responses-mode overwrite` to intentionally
 start a fresh sidecar.
 
+Run shard-count ablations from one atomic cache:
+
+```bash
+uv run --project decomposition python -m decomposition.cli shard-ablation \
+  --dataset datasets/AITA-YTA.csv \
+  --dataset-name AITA-YTA \
+  --source-field prompt \
+  --run-id aita-yta-openai-ablation-v1 \
+  --provider openai \
+  --model gpt-5.4-mini \
+  --target-turns 4,6,8 \
+  --out-dir decomposition/artifacts \
+  --seed-shards decomposition/artifacts/shards.AITA-YTA.openai.smoke.jsonl \
+  --resume \
+  --resume-include-temp \
+  --concurrency 2 \
+  --llm-retries 1 \
+  --provider-max-retries 2 \
+  --progress auto
+```
+
+`shard-ablation` asks OpenAI only for atomic units, caches those rows in
+`atomic_units.<dataset>.openai.jsonl`, then deterministically writes
+`shards.<dataset>.openai.k4.jsonl`, `k6`, and `k8` with `natural_dp_v1`.
+Short rows remain in every shard file as `ineligible_target_shards` records with
+their atomic units preserved. The expensive recovery order is: final atomic
+cache, `atomic_units...jsonl.tmp`, valid raw response sidecar rows, explicit
+`--seed-shards` files, then new OpenAI calls for true misses. If a run crashes
+during calls, rerun the same command; if it crashes during shard generation,
+rerun and it should make zero OpenAI calls once the atomic cache is complete.
+
+OpenAI Batch is available for the same ablation path:
+
+```bash
+uv run --project decomposition python -m decomposition.cli shard-ablation-batch submit \
+  --dataset datasets/AITA-YTA.csv \
+  --dataset-name AITA-YTA \
+  --source-field prompt \
+  --run-id aita-yta-openai-ablation-v1 \
+  --target-turns 4,6,8 \
+  --out-dir decomposition/artifacts \
+  --seed-shards decomposition/artifacts/shards.AITA-YTA.openai.smoke.jsonl \
+  --batch-state decomposition/artifacts/shard_ablation_openai_batch_state.json
+
+uv run --project decomposition python -m decomposition.cli shard-ablation-batch collect \
+  --batch-state decomposition/artifacts/shard_ablation_openai_batch_state.json
+```
+
+Batch submit writes the prepared input JSONL, uploaded file id, and batch id into
+the state file incrementally. Batch collect is rerunnable and handles unordered
+OpenAI output rows by `custom_id` before writing the same atomic cache and shard
+artifacts as realtime mode.
+
+Live smoke run:
+
+```bash
+uv run --project decomposition python -m decomposition.cli shard-ablation \
+  --dataset datasets/AITA-YTA.csv \
+  --dataset-name AITA-YTA \
+  --source-field prompt \
+  --run-id aita-yta-openai-ablation-smoke-v1 \
+  --limit 20 \
+  --target-turns 4,6,8 \
+  --out-dir decomposition/artifacts \
+  --seed-shards decomposition/artifacts/shards.AITA-YTA.openai.smoke.jsonl \
+  --resume \
+  --concurrency 2
+```
+
 Anthropic remains available as a compatibility provider:
 
 ```bash
@@ -216,11 +285,12 @@ An LLM response added, removed, reordered, or reworded source text. Regenerate t
 response so every `atomic_units[].text` value is an exact verbatim span from the
 raw post. Local code computes offsets after ingest; model offsets are ignored.
 
-`ok records must contain exactly 4 shards`
+`ok records must contain exactly target_turns shards`
 
-The response did not satisfy the fixed-four primary condition. For LLM-assisted
-runs, make sure the response has exactly four shard objects and that those shards
-partition the atomic unit ids in source order.
+The response or deterministic planner did not satisfy the requested target count.
+For legacy LLM-assisted runs, make sure the response has exactly four shard
+objects. For ablations, inspect `target_turns`, the atomic-unit count, and the
+summary JSON.
 
 ## Developer Notes
 

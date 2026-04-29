@@ -25,6 +25,7 @@ from .anthropic_io import (
     response_from_anthropic_message,
 )
 from .align import AlignmentError
+from .ablation import collect_shard_ablation_batch, run_shard_ablation, submit_shard_ablation_batch
 from .datasets import DatasetError, load_dataset
 from .deterministic import SegmentationConfig, deterministic_segment, utc_now
 from .llm_io import LLMIngestError, build_request, load_requests, read_jsonl, record_from_response
@@ -1426,6 +1427,51 @@ def _parser() -> argparse.ArgumentParser:
     openai_parser.add_argument("--progress", choices=("auto", "bar", "log", "off"), default="auto", help="progress display")
     openai_parser.set_defaults(func=openai_command)
 
+    shard_ablation_parser = subparsers.add_parser(
+        "shard-ablation",
+        help="extract atomic units once and deterministically write k4/k6/k8 shard files",
+        description="Run OpenAI atomic-unit extraction with resumable caching, then create deterministic shard-count ablations.",
+        epilog="""Example:
+  python -m decomposition.cli shard-ablation --dataset datasets/AITA-YTA.csv \
+--dataset-name AITA-YTA --source-field prompt --run-id aita-yta-openai-ablation-v1 \
+--target-turns 4,6,8 --out-dir decomposition/artifacts --resume
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_dataset_args(shard_ablation_parser)
+    _add_shard_ablation_args(shard_ablation_parser)
+    shard_ablation_parser.add_argument("--concurrency", type=int, default=1, help="maximum concurrent uncached OpenAI atomic calls")
+    shard_ablation_parser.add_argument("--llm-retries", type=int, default=1, help="extra atomic-output attempts for retryable failures")
+    shard_ablation_parser.add_argument("--progress", choices=("auto", "bar", "log", "off"), default="auto", help="progress display")
+    shard_ablation_parser.set_defaults(func=run_shard_ablation)
+
+    shard_ablation_batch_parser = subparsers.add_parser(
+        "shard-ablation-batch",
+        help="submit or collect OpenAI Batch atomic extraction for shard ablations",
+        description="Use OpenAI Batch for atomic cache misses, then write k4/k6/k8 shard ablation artifacts.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    shard_ablation_batch_subparsers = shard_ablation_batch_parser.add_subparsers(
+        dest="batch_command",
+        metavar="BATCH_COMMAND",
+        required=True,
+        parser_class=HelpfulArgumentParser,
+    )
+    shard_ablation_batch_submit = shard_ablation_batch_subparsers.add_parser("submit", help="submit atomic cache misses")
+    _add_dataset_args(shard_ablation_batch_submit)
+    _add_shard_ablation_args(shard_ablation_batch_submit)
+    shard_ablation_batch_submit.add_argument("--batch-state", type=Path, required=True, help="JSON state sidecar to write")
+    shard_ablation_batch_submit.add_argument("--batch-input", type=Path, default=None, help="OpenAI batch input JSONL path")
+    shard_ablation_batch_submit.set_defaults(func=submit_shard_ablation_batch)
+
+    shard_ablation_batch_collect = shard_ablation_batch_subparsers.add_parser("collect", help="collect a completed shard-ablation batch")
+    shard_ablation_batch_collect.add_argument("--batch-state", type=Path, required=True, help="JSON state sidecar from submit")
+    shard_ablation_batch_collect.add_argument("--raw-responses-mode", choices=("append", "overwrite"), default="append")
+    shard_ablation_batch_collect.add_argument("--resume-include-temp", dest="resume_include_temp", action="store_true", default=True)
+    shard_ablation_batch_collect.add_argument("--no-resume-include-temp", dest="resume_include_temp", action="store_false")
+    shard_ablation_batch_collect.add_argument("--openai-max-retries", type=int, default=2, help="OpenAI SDK transport/API retry count")
+    shard_ablation_batch_collect.set_defaults(func=collect_shard_ablation_batch)
+
     anthropic_parser = subparsers.add_parser(
         "anthropic",
         help="call Anthropic and write validated shards.jsonl",
@@ -1688,6 +1734,29 @@ def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--segmentation-version", default="seg_v1", help="prompt/schema version to use")
     parser.add_argument("--created-at", default=None, help="override artifact timestamp for reproducible tests")
     parser.add_argument("--limit", type=int, default=None, help="optional maximum number of rows to process")
+
+
+def _add_shard_ablation_args(parser: argparse.ArgumentParser) -> None:
+    """Attach common shard-ablation provider/cache arguments."""
+    parser.add_argument("--provider", choices=("openai",), default="openai", help="atomic extraction provider")
+    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL, help="OpenAI model for atomic extraction")
+    parser.add_argument("--target-turns", default="4,6,8", help="comma-separated target shard counts")
+    parser.add_argument("--out-dir", type=Path, required=True, help="directory for atomic cache and shard artifacts")
+    parser.add_argument(
+        "--seed-shards",
+        type=Path,
+        action="append",
+        default=[],
+        help="existing validated shards JSONL to use as an explicit atomic-unit seed source; repeatable",
+    )
+    parser.add_argument("--resume", action="store_true", help="reuse final/temp atomic cache and raw response sidecar rows")
+    parser.add_argument("--resume-include-temp", dest="resume_include_temp", action="store_true", default=True)
+    parser.add_argument("--no-resume-include-temp", dest="resume_include_temp", action="store_false")
+    parser.add_argument("--provider-max-retries", type=int, default=2, help="provider SDK transport/API retry count")
+    parser.add_argument("--openai-max-retries", type=int, default=2, help="OpenAI SDK transport/API retry count")
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="maximum output tokens")
+    parser.add_argument("--temperature", type=float, default=0.0, help="sampling temperature")
+    parser.add_argument("--shard-policy", default="natural_dp_v1", help="deterministic shard planner policy")
 
 
 def _add_llm_manifest_args(parser: argparse.ArgumentParser) -> None:
@@ -2185,6 +2254,15 @@ def _response_error(
 def _hint_for_exception(exc: Exception) -> Optional[str]:
     """Return a short remediation hint for common developer-facing errors."""
     if isinstance(exc, DatasetError):
+        message = str(exc)
+        if "--target-turns" in message:
+            return "Use supported shard counts: 4,6,8."
+        if "--shard-policy" in message:
+            return "Use the default shard planner policy natural_dp_v1."
+        if "batch state" in message:
+            return "Pass the shard-ablation batch state JSON produced by the matching submit command."
+        if "failed to generate k" in message:
+            return "Inspect the atomic cache row, target_turns, and deterministic shard planner policy."
         return "Check that --dataset points to the intended CSV and --source-field matches one header exactly."
     if isinstance(exc, AnthropicRunError):
         if "ANTHROPIC_API_KEY" in str(exc):
@@ -2203,6 +2281,11 @@ def _hint_for_exception(exc: Exception) -> Optional[str]:
             return "Increase --max-tokens and retry this row."
         return "Check OPENAI_API_KEY, --model, --max-tokens, and the raw response sidecar for the failed row."
     if isinstance(exc, FileNotFoundError):
+        missing_path = getattr(exc, "filename", None)
+        if missing_path and str(missing_path).endswith(".batch_state.json"):
+            return "Run the matching batch submit command first, then pass its --batch-state path to collect."
+        if missing_path and str(missing_path).endswith(".json"):
+            return "Check the JSON sidecar path exists and rerun the command with the intended file."
         return "Check the path exists. For prompts, confirm --segmentation-version has a matching prompts/<version>.txt file."
     if "text not found after offset" in str(exc):
         return "Make the model return exact verbatim atomic-unit text in source order; local code computes offsets."

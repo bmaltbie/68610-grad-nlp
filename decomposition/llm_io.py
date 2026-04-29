@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import html
@@ -10,7 +11,15 @@ import unicodedata
 from .align import AlignmentError, UnitSpec, align_units
 from .datasets import DatasetExample
 from .deterministic import SEGMENTATION_VERSION, utc_now
-from .schema import AtomicUnit, Shard, ShardRecord, WarningItem, validate_record
+from .schema import (
+    AtomicUnit,
+    Shard,
+    ShardRecord,
+    ValidationError,
+    WarningItem,
+    validate_atomic_unit_sequence,
+    validate_record,
+)
 
 
 class LLMIngestError(Exception):
@@ -19,12 +28,79 @@ class LLMIngestError(Exception):
     pass
 
 
+@dataclass
+class AtomicUnitsRecord:
+    """Reusable expensive LLM output before deterministic shard planning."""
+
+    example_id: str
+    dataset_name: str
+    source_text_field: str
+    run_id: str
+    segmentation_version: str
+    segmenter_model: str
+    created_at: str
+    raw_source_text: str
+    atomic_units: List[AtomicUnit] = field(default_factory=list)
+    warnings: List[WarningItem] = field(default_factory=list)
+    atomic_request_fingerprint: Optional[str] = None
+    atomic_content_fingerprint: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the atomic cache row into JSONL-safe primitives."""
+        data = {
+            "example_id": self.example_id,
+            "dataset_name": self.dataset_name,
+            "source_text_field": self.source_text_field,
+            "run_id": self.run_id,
+            "segmentation_version": self.segmentation_version,
+            "segmenter_model": self.segmenter_model,
+            "created_at": self.created_at,
+            "raw_source_text": self.raw_source_text,
+            "atomic_units": [unit.to_dict() for unit in self.atomic_units],
+            "warnings": [warning.to_dict() for warning in self.warnings],
+        }
+        if self.atomic_request_fingerprint is not None:
+            data["atomic_request_fingerprint"] = self.atomic_request_fingerprint
+        if self.atomic_content_fingerprint is not None:
+            data["atomic_content_fingerprint"] = self.atomic_content_fingerprint
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AtomicUnitsRecord":
+        """Parse an atomic cache row before validation."""
+        return cls(
+            example_id=str(data.get("example_id", "")),
+            dataset_name=str(data.get("dataset_name", "")),
+            source_text_field=str(data.get("source_text_field", "")),
+            run_id=str(data.get("run_id", "")),
+            segmentation_version=str(data.get("segmentation_version", "")),
+            segmenter_model=str(data.get("segmenter_model", "")),
+            created_at=str(data.get("created_at", "")),
+            raw_source_text=str(data.get("raw_source_text", "")),
+            atomic_units=[AtomicUnit.from_dict(item) for item in data.get("atomic_units", [])],
+            warnings=[WarningItem.from_dict(item) for item in data.get("warnings", [])],
+            atomic_request_fingerprint=data.get("atomic_request_fingerprint") or data.get("request_fingerprint"),
+            atomic_content_fingerprint=data.get("atomic_content_fingerprint") or data.get("content_fingerprint"),
+        )
+
+
 def load_prompt(segmentation_version: str = SEGMENTATION_VERSION) -> str:
     """Load the versioned segmentation prompt for request generation."""
     prompt_path = Path(__file__).with_name("prompts") / (segmentation_version + ".txt")
     if not prompt_path.exists():
         raise FileNotFoundError(
             "prompt version not found: %s. Fix: add decomposition/prompts/%s.txt or pass a supported --segmentation-version."
+            % (prompt_path, segmentation_version)
+        )
+    return prompt_path.read_text(encoding="utf-8")
+
+
+def load_atomic_prompt(segmentation_version: str = SEGMENTATION_VERSION) -> str:
+    """Load the versioned atomic-only prompt for request generation."""
+    prompt_path = Path(__file__).with_name("prompts") / (segmentation_version + "_atomic.txt")
+    if not prompt_path.exists():
+        raise FileNotFoundError(
+            "atomic prompt version not found: %s. Fix: add decomposition/prompts/%s_atomic.txt or pass a supported --segmentation-version."
             % (prompt_path, segmentation_version)
         )
     return prompt_path.read_text(encoding="utf-8")
@@ -39,6 +115,11 @@ def request_id_for(example: DatasetExample, run_id: str, segmentation_version: s
         run_id,
         segmentation_version,
     )
+
+
+def atomic_request_id_for(example: DatasetExample, run_id: str, segmentation_version: str) -> str:
+    """Build a deterministic atomic-only request id for one source row."""
+    return request_id_for(example, run_id, segmentation_version) + ":atomic"
 
 
 def build_request(
@@ -68,6 +149,37 @@ def build_request(
                 {"unit_id": 1, "text": "verbatim source span", "section_type": "title|body|tldr|edit|update|other"}
             ],
             "shards": [{"unit_ids": [1, 2], "section_role": "setup|main_event|..."}],
+            "warnings": [],
+        },
+    }
+
+
+def build_atomic_request(
+    example: DatasetExample,
+    run_id: str,
+    segmentation_version: str = SEGMENTATION_VERSION,
+    created_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create one provider-neutral atomic-only request for external model execution."""
+    prompt = load_atomic_prompt(segmentation_version)
+    return {
+        "request_id": atomic_request_id_for(example, run_id, segmentation_version),
+        "example_id": example.example_id,
+        "dataset_name": example.dataset_name,
+        "source_text_field": example.source_text_field,
+        "run_id": run_id,
+        "segmentation_version": segmentation_version,
+        "created_at": created_at or utc_now(),
+        "task": "atomic_units",
+        "raw_source_text": example.raw_source_text,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": example.raw_source_text},
+        ],
+        "expected_response": {
+            "atomic_units": [
+                {"unit_id": 1, "text": "verbatim source span", "section_type": "title|body|tldr|edit|update|other"}
+            ],
             "warnings": [],
         },
     }
@@ -111,6 +223,86 @@ def record_from_response(request: Dict[str, Any], response: Dict[str, Any]) -> S
     )
     validate_record(record)
     return record
+
+
+def atomic_record_from_response(request: Dict[str, Any], response: Dict[str, Any]) -> AtomicUnitsRecord:
+    """Align, assemble, and validate one atomic-only model response."""
+    payload = _payload(response)
+    unit_specs = _unit_specs_from_payload(_list_payload_field(payload, "atomic_units"))
+    if not unit_specs:
+        raise LLMIngestError(
+            "response contains no atomic_units. Fix: include a non-empty atomic_units list with verbatim source text."
+        )
+    raw_source_text = str(request["raw_source_text"])
+    atomic_units, alignment_warnings = _align_units_for_ingest(raw_source_text, unit_specs)
+    warnings = [_warning_item(item) for item in _list_payload_field(payload, "warnings")]
+    warnings.extend(alignment_warnings)
+    record = AtomicUnitsRecord(
+        example_id=str(request["example_id"]),
+        dataset_name=str(request["dataset_name"]),
+        source_text_field=str(request["source_text_field"]),
+        run_id=str(request["run_id"]),
+        segmentation_version=str(request["segmentation_version"]),
+        segmenter_model=str(response.get("segmenter_model") or payload.get("segmenter_model") or "external"),
+        created_at=str(response.get("created_at") or request.get("created_at") or utc_now()),
+        raw_source_text=raw_source_text,
+        atomic_units=atomic_units,
+        warnings=warnings,
+    )
+    validate_atomic_record(record)
+    return record
+
+
+def atomic_record_from_shard_record(record: ShardRecord) -> AtomicUnitsRecord:
+    """Reuse the source-aligned atomic units from a validated shard artifact."""
+    validate_record(record)
+    atomic_record = AtomicUnitsRecord(
+        example_id=record.example_id,
+        dataset_name=record.dataset_name,
+        source_text_field=record.source_text_field,
+        run_id=record.run_id,
+        segmentation_version=record.segmentation_version,
+        segmenter_model=record.segmenter_model,
+        created_at=record.created_at,
+        raw_source_text=record.raw_source_text,
+        atomic_units=list(record.atomic_units),
+        warnings=list(record.warnings),
+        atomic_request_fingerprint=record.request_fingerprint,
+        atomic_content_fingerprint=record.content_fingerprint,
+    )
+    validate_atomic_record(atomic_record)
+    return atomic_record
+
+
+def validate_atomic_record_dict(data: Dict[str, Any]) -> None:
+    """Validate a JSON-compatible atomic cache row."""
+    try:
+        record = AtomicUnitsRecord.from_dict(data)
+    except Exception as exc:  # noqa: BLE001 - validator reports data-shape failures.
+        raise ValidationError(["atomic record could not be parsed: %s" % exc])
+    validate_atomic_record(record)
+
+
+def validate_atomic_record(record: AtomicUnitsRecord) -> None:
+    """Raise ValidationError if an atomic cache row is not reusable."""
+    errors: List[str] = []
+    for field_name in (
+        "example_id",
+        "dataset_name",
+        "source_text_field",
+        "run_id",
+        "segmentation_version",
+        "segmenter_model",
+        "created_at",
+        "raw_source_text",
+    ):
+        if not getattr(record, field_name):
+            errors.append("missing required field: %s" % field_name)
+    if not record.atomic_units:
+        errors.append("atomic records must contain at least one atomic unit")
+    if errors:
+        raise ValidationError(errors)
+    validate_atomic_unit_sequence(record.raw_source_text, record.atomic_units, record.warnings)
 
 
 def read_jsonl(path: Path) -> Iterable[Dict[str, Any]]:

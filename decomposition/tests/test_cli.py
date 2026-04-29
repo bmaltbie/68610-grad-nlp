@@ -108,6 +108,61 @@ def test_cli_dataset_error_includes_fix(tmp_path: Path) -> None:
     assert "--source-field" in result.stderr
 
 
+def test_cli_shard_ablation_target_turns_error_has_specific_fix(tmp_path: Path) -> None:
+    dataset = tmp_path / "data.csv"
+    dataset.write_text("id,prompt\nex1,AITA? First. Second. Third. Fourth.\n", encoding="utf-8")
+
+    result = run_cli(
+        "shard-ablation",
+        "--dataset",
+        str(dataset),
+        "--dataset-name",
+        "AITA-YTA",
+        "--source-field",
+        "prompt",
+        "--run-id",
+        "run1",
+        "--target-turns",
+        "5",
+        "--out-dir",
+        str(tmp_path / "artifacts"),
+        "--progress",
+        "off",
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 1
+    assert "--target-turns supports only" in result.stderr
+    assert "Fix: Use supported shard counts: 4,6,8." in result.stderr
+
+
+def test_cli_shard_ablation_batch_collect_missing_state_has_specific_fix(tmp_path: Path) -> None:
+    result = run_cli(
+        "shard-ablation-batch",
+        "collect",
+        "--batch-state",
+        str(tmp_path / "missing.batch_state.json"),
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 1
+    assert "No such file or directory" in result.stderr
+    assert "Fix: Run the matching batch submit command first" in result.stderr
+
+
+def test_cli_shard_ablation_batch_collect_defaults_to_append_raw_sidecar() -> None:
+    args = cli._parser().parse_args(
+        [
+            "shard-ablation-batch",
+            "collect",
+            "--batch-state",
+            "state.json",
+        ]
+    )
+
+    assert args.raw_responses_mode == "append"
+
+
 def test_cli_generate_requests_shape(tmp_path: Path) -> None:
     dataset = tmp_path / "data.csv"
     dataset.write_text("id,original_post\nex1,AITA for refusing? First. Second. Third.\n", encoding="utf-8")

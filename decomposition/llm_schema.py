@@ -77,3 +77,14 @@ SEGMENTATION_OUTPUT_SCHEMA: Dict[str, Any] = {
     "required": ["atomic_units", "shards", "warnings"],
     "additionalProperties": False,
 }
+
+
+ATOMIC_UNITS_OUTPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "atomic_units": SEGMENTATION_OUTPUT_SCHEMA["properties"]["atomic_units"],
+        "warnings": SEGMENTATION_OUTPUT_SCHEMA["properties"]["warnings"],
+    },
+    "required": ["atomic_units", "warnings"],
+    "additionalProperties": False,
+}

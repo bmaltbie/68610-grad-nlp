@@ -110,3 +110,29 @@ def test_ineligible_record_passes_with_warning_and_empty_shards() -> None:
     )
 
     validate_record(record)
+
+
+def test_ineligible_target_shards_preserves_atomic_units() -> None:
+    raw = "One. Two. Three."
+    record = ShardRecord(
+        example_id="ex1",
+        dataset_name="AITA-YTA",
+        source_text_field="prompt",
+        run_id="run1",
+        segmentation_version="seg_v1",
+        segmenter_model="gpt-test+natural_dp_v1",
+        created_at="2026-04-29T00:00:00Z",
+        raw_source_text=raw,
+        normalized_source_text=None,
+        target_turns=4,
+        status="ineligible_target_shards",
+        atomic_units=[
+            AtomicUnit(1, "One.", 0, 4, "body"),
+            AtomicUnit(2, "Two.", 5, 9, "body"),
+            AtomicUnit(3, "Three.", 10, 16, "body"),
+        ],
+        shards=[],
+        warnings=[WarningItem("too_few_atomic_units_for_target", "status", "warning", "Too short for k4.")],
+    )
+
+    validate_record(record)

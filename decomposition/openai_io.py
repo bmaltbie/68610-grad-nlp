@@ -6,7 +6,7 @@ import json
 import os
 
 from .deterministic import utc_now
-from .llm_schema import SEGMENTATION_OUTPUT_SCHEMA
+from .llm_schema import ATOMIC_UNITS_OUTPUT_SCHEMA, SEGMENTATION_OUTPUT_SCHEMA
 
 
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
@@ -65,6 +65,27 @@ def call_openai(
     return response_from_openai_response(request, response, model=model, created_at=created_at)
 
 
+def call_openai_atomic(
+    request: Dict[str, Any],
+    model: str = DEFAULT_OPENAI_MODEL,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float = 0.0,
+    client: Optional[Any] = None,
+    created_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute one atomic-only request against OpenAI and wrap the response for ingest."""
+    openai_client = client or create_openai_client()
+    response = openai_client.responses.create(
+        **openai_atomic_response_kwargs(
+            request,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    )
+    return response_from_openai_response(request, response, model=model, created_at=created_at)
+
+
 def openai_response_kwargs(
     request: Dict[str, Any],
     model: str = DEFAULT_OPENAI_MODEL,
@@ -88,6 +109,29 @@ def openai_response_kwargs(
     }
 
 
+def openai_atomic_response_kwargs(
+    request: Dict[str, Any],
+    model: str = DEFAULT_OPENAI_MODEL,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float = 0.0,
+) -> Dict[str, Any]:
+    """Build OpenAI Responses API kwargs for atomic-only realtime and batch calls."""
+    return {
+        "model": model,
+        "input": request_to_openai_input(request),
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "atomic_units",
+                "schema": ATOMIC_UNITS_OUTPUT_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+
+
 def openai_batch_request(
     custom_id: str,
     request: Dict[str, Any],
@@ -101,6 +145,27 @@ def openai_batch_request(
         "method": "POST",
         "url": "/v1/responses",
         "body": openai_response_kwargs(
+            request,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        ),
+    }
+
+
+def openai_atomic_batch_request(
+    custom_id: str,
+    request: Dict[str, Any],
+    model: str = DEFAULT_OPENAI_MODEL,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    temperature: float = 0.0,
+) -> Dict[str, Any]:
+    """Build one OpenAI Batch JSONL request row for an atomic-only Responses call."""
+    return {
+        "custom_id": custom_id,
+        "method": "POST",
+        "url": "/v1/responses",
+        "body": openai_atomic_response_kwargs(
             request,
             model=model,
             max_tokens=max_tokens,
