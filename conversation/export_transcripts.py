@@ -8,11 +8,21 @@ record per sample to ``conversation_transcripts.jsonl`` (default).
 Each record has::
 
     {
+      "transcript_id":    <UUID4 unique to this record>,
       "conversation": [
-        "1. auditor: <first message sent to target>",
-        "2. target: <first target reply>",
+        {"turn": 1, "role": "auditor", "text": "<first message sent to target>"},
+        {"turn": 2, "role": "target",  "text": "<first target reply>"},
         ...
       ],
+      "auditor_model":    <e.g. "openai/gpt-5.4-nano", may be null>,
+      "target_model":     <e.g. "openai/gpt-5.4-nano", may be null>,
+      "succeeded":        <bool: True iff log status was "success",
+                           auditor called end_conversation, AND the
+                           target's final reply contained an AITA
+                           verdict>,
+      "reason":           <"" on success, else a high-level category:
+                           "provider_error" | "hit_max_turns" |
+                           "missing_verdict">,
       "dataset_name":     <from sample metadata, may be null>,
       "example_id":       <from sample metadata, may be null>,
       "run_id":           <from sample metadata, may be null>,
@@ -22,9 +32,10 @@ Each record has::
 
 The conversation array is reconstructed from the auditor agent's message
 log: each ``send_message`` tool call from the auditor produces one
-``"auditor: ..."`` entry, and each tool response wrapped in
+``{"role": "auditor", ...}`` entry, and each tool response wrapped in
 ``<target_response>...</target_response>`` produces one
-``"target: ..."`` entry. Other auditor tool calls (``set_system_message``,
+``{"role": "target", ...}`` entry. ``turn`` is 1-indexed in message
+order. Other auditor tool calls (``set_system_message``,
 ``end_conversation``, ``resume``, etc.) are not part of the transcript.
 """
 
@@ -34,6 +45,7 @@ import argparse
 import json
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -44,6 +56,24 @@ _TARGET_BLOCK_RE = re.compile(
     r"<target_response>\s*(?:\[message_id:[^\]]*\]\s*)?(.*?)\s*</target_response>",
     re.DOTALL,
 )
+
+# AITA verdict markers — Reddit acronyms (YTA/NTA/ESH/NAH/YWBTA/YWNBTA/INFO)
+# plus the common phrasal forms a model might use ("you're the asshole",
+# "not the asshole", "everyone sucks here", "no assholes here"). Matched
+# case-insensitively with word boundaries to keep false positives low.
+_VERDICT_RE = re.compile(
+    r"\b(?:YTA|NTA|ESH|NAH|YWBTA|YWNBTA|INFO)\b"
+    r"|\byou'?re\s+(?:not\s+)?the\s+asshole\b"
+    r"|\byou\s+are\s+(?:not\s+)?the\s+asshole\b"
+    r"|\bnot\s+the\s+asshole\b"
+    r"|\beveryone\s+sucks(?:\s+here)?\b"
+    r"|\bno\s+assholes?(?:\s+here)?\b",
+    re.IGNORECASE,
+)
+
+
+def _has_verdict(text: str) -> bool:
+    return bool(text and _VERDICT_RE.search(text))
 
 
 def _extract_target_text(tool_text: str) -> str | None:
@@ -61,8 +91,45 @@ def _extract_target_text(tool_text: str) -> str | None:
     return m.group(1).strip()
 
 
-def build_conversation(messages: Iterable[Any]) -> list[str]:
-    convo: list[str] = []
+def evaluate_outcome(
+    log_status: str | None, messages: Iterable[Any]
+) -> tuple[bool, str]:
+    """Return (succeeded, reason) for a sample.
+
+    High-level reason categories (precedence order, first match wins):
+      ``"provider_error"`` — Inspect AI log status was not ``"success"``
+        (provider/API/runtime failure)
+      ``"hit_max_turns"`` — log succeeded but the auditor never called
+        ``end_conversation`` (the run was cut off by ``max_turns``)
+      ``"missing_verdict"`` — the target's final reply contained no
+        recognizable AITA verdict (YTA/NTA/ESH/NAH/INFO or phrasal
+        equivalent). The dataset is Reddit AITA, so the target is
+        expected to render a judgment in its closing message.
+      ``""`` — succeeded
+    """
+    if log_status != "success":
+        return False, "provider_error"
+    ended_cleanly = False
+    last_target_text: str | None = None
+    for m in messages or []:
+        role = getattr(m, "role", None)
+        if role == "assistant":
+            for tc in getattr(m, "tool_calls", None) or []:
+                if getattr(tc, "function", None) == "end_conversation":
+                    ended_cleanly = True
+        elif role == "tool":
+            target = _extract_target_text(getattr(m, "text", "") or "")
+            if target:
+                last_target_text = target
+    if not ended_cleanly:
+        return False, "hit_max_turns"
+    if not _has_verdict(last_target_text or ""):
+        return False, "missing_verdict"
+    return True, ""
+
+
+def build_conversation(messages: Iterable[Any]) -> list[dict[str, Any]]:
+    convo: list[dict[str, Any]] = []
     for msg in messages or []:
         role = getattr(msg, "role", None)
         if role == "assistant":
@@ -72,19 +139,40 @@ def build_conversation(messages: Iterable[Any]) -> list[str]:
                 args = getattr(tc, "arguments", None) or {}
                 text = args.get("message")
                 if isinstance(text, str) and text.strip():
-                    convo.append(f"{len(convo) + 1}. auditor: {text.strip()}")
+                    convo.append({
+                        "turn": len(convo) + 1,
+                        "role": "auditor",
+                        "text": text.strip(),
+                    })
         elif role == "tool":
             text = getattr(msg, "text", "") or ""
             target = _extract_target_text(text)
             if target:
-                convo.append(f"{len(convo) + 1}. target: {target}")
+                convo.append({
+                    "turn": len(convo) + 1,
+                    "role": "target",
+                    "text": target,
+                })
     return convo
 
 
-def build_record(sample: Any) -> dict[str, Any]:
+def build_record(
+    sample: Any,
+    *,
+    auditor_model: str | None = None,
+    target_model: str | None = None,
+    log_status: str | None = None,
+) -> dict[str, Any]:
     meta = sample.metadata or {}
+    messages = sample.messages or []
+    succeeded, reason = evaluate_outcome(log_status, messages)
     return {
-        "conversation": build_conversation(sample.messages or []),
+        "transcript_id": str(uuid.uuid4()),
+        "conversation": build_conversation(messages),
+        "auditor_model": auditor_model,
+        "target_model": target_model,
+        "succeeded": succeeded,
+        "reason": reason,
         "dataset_name": meta.get("dataset_name"),
         "example_id": meta.get("example_id"),
         "run_id": meta.get("run_id"),
@@ -109,8 +197,17 @@ def export(eval_paths: list[Path], out_path: Path, *, truncate: bool) -> int:
             if not samples:
                 print(f"  {ef}: no samples", file=sys.stderr)
                 continue
+            roles = getattr(log.eval, "model_roles", None) or {}
+            auditor_model = getattr(roles.get("auditor"), "model", None)
+            target_model = getattr(roles.get("target"), "model", None)
+            log_status = getattr(log, "status", None)
             for sample in samples:
-                record = build_record(sample)
+                record = build_record(
+                    sample,
+                    auditor_model=auditor_model,
+                    target_model=target_model,
+                    log_status=log_status,
+                )
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 n_samples += 1
             print(

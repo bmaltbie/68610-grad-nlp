@@ -12,9 +12,11 @@ its seed instruction, and writes the resulting auditor/target transcript
 to ``outputs/<seed_identifier>/`` (relative to the current working
 directory) in Inspect AI's native ``.eval`` format.
 
-As each audit completes, a flat record (conversation array + the
-shard's ``dataset_name`` / ``example_id`` / ``run_id`` /
-``segmenter_model`` and the ``seed_identifier``) is appended to
+As each audit completes, a flat record (a UUID4 ``transcript_id``,
+the conversation array, ``auditor_model`` / ``target_model``,
+``succeeded`` / ``reason`` outcome flags, and the shard's
+``dataset_name`` / ``example_id`` / ``run_id`` / ``segmenter_model``
+and the ``seed_identifier``) is appended to
 ``conversation_transcripts.jsonl`` (override with
 ``--transcripts-out PATH`` or disable with ``--no-transcripts``).
 ``conversation/export_transcripts.py`` can rebuild the same JSONL
@@ -219,15 +221,6 @@ def _percentile(values: list[float], p: float) -> float:
     return s[idx]
 
 
-def _ended_cleanly(messages: list[Any]) -> bool:
-    """True if the auditor called end_conversation at any point."""
-    for m in messages or []:
-        for tc in getattr(m, "tool_calls", None) or []:
-            if getattr(tc, "function", None) == "end_conversation":
-                return True
-    return False
-
-
 def _error_summary(log: Any) -> str:
     """Return a short bucketable error label for a non-success log."""
     err = getattr(log, "error", None)
@@ -336,11 +329,21 @@ def main(argv: list[str] | None = None) -> int:
     failure_count = 0
     success_turn_counts: list[int] = []
     audit_durations: list[float] = []
-    success_ended_cleanly = 0  # auditor called end_conversation
-    failure_reasons: Counter[str] = Counter()
-    # per-seed: {sid: {"success": int, "failure": int, "turns": [int], "cleanly": int}}
+    # high-level reason categories, mirrors `evaluate_outcome`:
+    REASON_CATEGORIES = ("provider_error", "hit_max_turns", "missing_verdict")
+    reason_counts: Counter[str] = Counter()
+    # detailed first-line bucket of inspect-ai errors for provider_error
+    # failures only (the other two categories are sample-level, not log errors)
+    provider_error_details: Counter[str] = Counter()
     per_seed: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"success": 0, "failure": 0, "turns": [], "cleanly": 0}
+        lambda: {
+            "success": 0,
+            "failure": 0,
+            "turns": [],
+            "provider_error": 0,
+            "hit_max_turns": 0,
+            "missing_verdict": 0,
+        }
     )
     # aggregate token usage across all logs: model -> bucket
     token_totals: dict[str, dict[str, int]] = defaultdict(
@@ -404,15 +407,6 @@ def main(argv: list[str] | None = None) -> int:
                     f"location={log.location}",
                     file=sys.stderr,
                 )
-                ok = log.status == "success"
-                if ok:
-                    success_count += 1
-                    per_seed[sid]["success"] += 1
-                else:
-                    failure_count += 1
-                    per_seed[sid]["failure"] += 1
-                    all_ok = False
-                    failure_reasons[_error_summary(log)] += 1
 
                 # token usage, aggregated by model name
                 stats = getattr(log, "stats", None)
@@ -431,15 +425,29 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
                 for sample in _samples_with_messages(log):
-                    record = build_record(sample)
+                    record = build_record(
+                        sample,
+                        auditor_model=AUDITOR_MODEL,
+                        target_model=TARGET_MODEL,
+                        log_status=log.status,
+                    )
                     turns = len(record["conversation"])
-                    cleanly = _ended_cleanly(sample.messages or [])
-                    if ok:
+                    if record["succeeded"]:
+                        success_count += 1
+                        per_seed[sid]["success"] += 1
                         success_turn_counts.append(turns)
                         per_seed[sid]["turns"].append(turns)
-                        if cleanly:
-                            success_ended_cleanly += 1
-                            per_seed[sid]["cleanly"] += 1
+                    else:
+                        failure_count += 1
+                        all_ok = False
+                        reason = record["reason"]
+                        per_seed[sid]["failure"] += 1
+                        reason_counts[reason] += 1
+                        if reason in per_seed[sid]:
+                            per_seed[sid][reason] += 1
+                        if reason == "provider_error":
+                            provider_error_details[_error_summary(log)] += 1
+
                     if transcripts_path is not None:
                         with transcripts_path.open("a") as out:
                             out.write(
@@ -462,6 +470,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"total audits:        {total}", file=sys.stderr)
     print(f"  successes:         {success_count}", file=sys.stderr)
     print(f"  failures:          {failure_count}", file=sys.stderr)
+    for cat in REASON_CATEGORIES:
+        n = reason_counts.get(cat, 0)
+        if n:
+            print(f"    {cat + ':':<18} {n}", file=sys.stderr)
     print(f"total time:          {_fmt_duration(elapsed)}", file=sys.stderr)
 
     # --- per-audit timing ---
@@ -481,14 +493,6 @@ def main(argv: list[str] | None = None) -> int:
             f"avg turns/success:   {avg_turns:.1f} "
             f"(over {len(success_turn_counts)} audit(s); "
             f"min={min(success_turn_counts)}, max={max(success_turn_counts)})",
-            file=sys.stderr,
-        )
-        clean_pct = 100.0 * success_ended_cleanly / len(success_turn_counts)
-        hit_max = len(success_turn_counts) - success_ended_cleanly
-        print(
-            f"ended via end_conversation: {success_ended_cleanly}/"
-            f"{len(success_turn_counts)} ({clean_pct:.1f}%); "
-            f"hit max_turns: {hit_max}",
             file=sys.stderr,
         )
     else:
@@ -517,11 +521,11 @@ def main(argv: list[str] | None = None) -> int:
             if extras:
                 print(f"    {'  '.join(extras)}", file=sys.stderr)
 
-    # --- failure reasons ---
-    if failure_reasons:
+    # --- provider_error details (the only category with log-level errors) ---
+    if provider_error_details:
         print("", file=sys.stderr)
-        print("failure reasons:", file=sys.stderr)
-        for reason, n in failure_reasons.most_common():
+        print("provider_error details:", file=sys.stderr)
+        for reason, n in provider_error_details.most_common():
             print(f"  [{n:>4}]  {reason}", file=sys.stderr)
 
     # --- per-seed breakdown ---
@@ -530,20 +534,23 @@ def main(argv: list[str] | None = None) -> int:
         print("per-seed breakdown:", file=sys.stderr)
         header = (
             f"  {'seed_identifier':<24}  {'succ':>4}  {'fail':>4}  "
-            f"{'avg_turns':>9}  {'cleanly_ended':>13}"
+            f"{'prov_err':>8}  {'max_turns':>9}  {'no_verdict':>10}  "
+            f"{'avg_turns':>9}"
         )
         print(header, file=sys.stderr)
-        print(f"  {'-' * 24}  {'-' * 4}  {'-' * 4}  {'-' * 9}  {'-' * 13}", file=sys.stderr)
+        print(
+            f"  {'-' * 24}  {'-' * 4}  {'-' * 4}  {'-' * 8}  "
+            f"{'-' * 9}  {'-' * 10}  {'-' * 9}",
+            file=sys.stderr,
+        )
         for sid in sorted(per_seed):
             row = per_seed[sid]
             n_succ = row["success"]
             avg_t = (sum(row["turns"]) / len(row["turns"])) if row["turns"] else 0.0
-            cleanly_str = (
-                f"{row['cleanly']}/{n_succ}" if n_succ else "n/a"
-            )
             print(
                 f"  {sid:<24}  {n_succ:>4}  {row['failure']:>4}  "
-                f"{avg_t:>9.1f}  {cleanly_str:>13}",
+                f"{row['provider_error']:>8}  {row['hit_max_turns']:>9}  "
+                f"{row['missing_verdict']:>10}  {avg_t:>9.1f}",
                 file=sys.stderr,
             )
 
