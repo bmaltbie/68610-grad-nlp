@@ -26,6 +26,7 @@ from .anthropic_io import (
 )
 from .align import AlignmentError
 from .ablation import collect_shard_ablation_batch, run_shard_ablation, submit_shard_ablation_batch
+from .cohort import run_shard_ablation_cohort
 from .datasets import DatasetError, load_dataset
 from .deterministic import SegmentationConfig, deterministic_segment, utc_now
 from .llm_io import LLMIngestError, build_request, load_requests, read_jsonl, record_from_response
@@ -1445,6 +1446,25 @@ def _parser() -> argparse.ArgumentParser:
     shard_ablation_parser.add_argument("--progress", choices=("auto", "bar", "log", "off"), default="auto", help="progress display")
     shard_ablation_parser.set_defaults(func=run_shard_ablation)
 
+    shard_ablation_cohort_parser = subparsers.add_parser(
+        "shard-ablation-cohort",
+        help="postprocess shard ablations into matched eligible-all cohort files",
+        description="Filter existing k-target shard artifacts to examples that are ok for every requested target count.",
+        epilog="""Example:
+  python -m decomposition.cli shard-ablation-cohort --artifacts-dir decomposition/artifacts \
+--dataset-name AITA-YTA --provider openai --target-turns 4,6,8 \
+--out-dir decomposition/artifacts/cohorts
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    shard_ablation_cohort_parser.add_argument("--artifacts-dir", type=Path, required=True, help="directory containing shards.<dataset>.<provider>.k*.jsonl")
+    shard_ablation_cohort_parser.add_argument("--dataset-name", required=True, help="dataset provenance label, e.g. AITA-YTA")
+    shard_ablation_cohort_parser.add_argument("--provider", default="openai", help="provider label used in shard filenames")
+    shard_ablation_cohort_parser.add_argument("--target-turns", default="4,6,8", help="comma-separated target shard counts")
+    shard_ablation_cohort_parser.add_argument("--out-dir", type=Path, required=True, help="directory for cohort shard files and summary")
+    shard_ablation_cohort_parser.add_argument("--allow-empty", action="store_true", help="write empty cohort files instead of failing when no IDs match")
+    shard_ablation_cohort_parser.set_defaults(func=run_shard_ablation_cohort)
+
     shard_ablation_batch_parser = subparsers.add_parser(
         "shard-ablation-batch",
         help="submit or collect OpenAI Batch atomic extraction for shard ablations",
@@ -2257,6 +2277,12 @@ def _hint_for_exception(exc: Exception) -> Optional[str]:
         message = str(exc)
         if "--target-turns" in message:
             return "Use supported shard counts: 4,6,8."
+        if "eligible-all cohort is empty" in message:
+            return "Check the requested target counts, or pass --allow-empty if an empty cohort is intentional."
+        if "missing shard artifact" in message:
+            return "Run shard-ablation first, or point --artifacts-dir at the directory containing the k-target shard files."
+        if "different example_id universe" in message or "duplicate example_id" in message:
+            return "Use k-target shard files from the same shard-ablation run."
         if "--shard-policy" in message:
             return "Use the default shard planner policy natural_dp_v1."
         if "batch state" in message:
