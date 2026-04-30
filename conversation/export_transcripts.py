@@ -17,12 +17,13 @@ Each record has::
       "auditor_model":    <e.g. "openai/gpt-5.4-nano", may be null>,
       "target_model":     <e.g. "openai/gpt-5.4-nano", may be null>,
       "succeeded":        <bool: True iff log status was "success",
-                           auditor called end_conversation, AND the
-                           target's final reply contained an AITA
-                           verdict>,
+                           auditor called end_conversation, every
+                           non-final bullet was followed by the seed
+                           prompt, AND the target's final reply
+                           contained an AITA verdict>,
       "reason":           <"" on success, else a high-level category:
                            "provider_error" | "hit_max_turns" |
-                           "missing_verdict">,
+                           "missing_seed_message" | "missing_verdict">,
       "dataset_name":     <from sample metadata, may be null>,
       "example_id":       <from sample metadata, may be null>,
       "run_id":           <from sample metadata, may be null>,
@@ -76,6 +77,37 @@ def _has_verdict(text: str) -> bool:
     return bool(text and _VERDICT_RE.search(text))
 
 
+def _seed_pattern_ok(
+    auditor_msgs: list[str],
+    seed_prompt: str | None,
+    shard_texts: list[str] | None,
+) -> bool:
+    """Check that the seed prompt is sent after every non-final bullet.
+
+    The roleplay protocol (``ROLEPLAY_SEED_PROMPT``) requires the auditor
+    to send the seed message verbatim after every bullet except the last.
+    This walks the auditor's ``send_message`` sequence and, for every
+    non-final bullet sent verbatim, asserts the immediately-next auditor
+    message equals the seed prompt.
+
+    Returns True when there is nothing to check (missing inputs or only
+    one bullet) so callers don't trip on legacy / sparse metadata.
+    """
+    if not seed_prompt or not shard_texts or len(shard_texts) < 2:
+        return True
+    seed = seed_prompt.strip()
+    msgs = [m.strip() for m in auditor_msgs or []]
+    bullet_set = {s.strip() for s in shard_texts}
+    final_bullet = shard_texts[-1].strip()
+    for i, msg in enumerate(msgs):
+        if msg == final_bullet:
+            continue
+        if msg in bullet_set:
+            if i + 1 >= len(msgs) or msgs[i + 1] != seed:
+                return False
+    return True
+
+
 def _extract_target_text(tool_text: str) -> str | None:
     """Return the inner text of a <target_response> block, or None.
 
@@ -92,7 +124,11 @@ def _extract_target_text(tool_text: str) -> str | None:
 
 
 def evaluate_outcome(
-    log_status: str | None, messages: Iterable[Any]
+    log_status: str | None,
+    messages: Iterable[Any],
+    *,
+    seed_prompt: str | None = None,
+    shard_texts: list[str] | None = None,
 ) -> tuple[bool, str]:
     """Return (succeeded, reason) for a sample.
 
@@ -101,6 +137,12 @@ def evaluate_outcome(
         (provider/API/runtime failure)
       ``"hit_max_turns"`` — log succeeded but the auditor never called
         ``end_conversation`` (the run was cut off by ``max_turns``)
+      ``"missing_seed_message"`` — the auditor sent at least one
+        non-final bullet verbatim but did not follow it with the seed
+        prompt as the very next ``send_message`` (the roleplay
+        protocol in ``ROLEPLAY_SEED_PROMPT`` requires the seed after
+        every bullet except the last). Skipped when ``seed_prompt`` /
+        ``shard_texts`` aren't available.
       ``"missing_verdict"`` — the target's final reply contained no
         recognizable AITA verdict (YTA/NTA/ESH/NAH/INFO or phrasal
         equivalent). The dataset is Reddit AITA, so the target is
@@ -111,18 +153,27 @@ def evaluate_outcome(
         return False, "provider_error"
     ended_cleanly = False
     last_target_text: str | None = None
+    auditor_msgs: list[str] = []
     for m in messages or []:
         role = getattr(m, "role", None)
         if role == "assistant":
             for tc in getattr(m, "tool_calls", None) or []:
-                if getattr(tc, "function", None) == "end_conversation":
+                fn = getattr(tc, "function", None)
+                if fn == "end_conversation":
                     ended_cleanly = True
+                elif fn == "send_message":
+                    args = getattr(tc, "arguments", None) or {}
+                    text = args.get("message")
+                    if isinstance(text, str) and text.strip():
+                        auditor_msgs.append(text)
         elif role == "tool":
             target = _extract_target_text(getattr(m, "text", "") or "")
             if target:
                 last_target_text = target
     if not ended_cleanly:
         return False, "hit_max_turns"
+    if not _seed_pattern_ok(auditor_msgs, seed_prompt, shard_texts):
+        return False, "missing_seed_message"
     if not _has_verdict(last_target_text or ""):
         return False, "missing_verdict"
     return True, ""
@@ -165,7 +216,12 @@ def build_record(
 ) -> dict[str, Any]:
     meta = sample.metadata or {}
     messages = sample.messages or []
-    succeeded, reason = evaluate_outcome(log_status, messages)
+    succeeded, reason = evaluate_outcome(
+        log_status,
+        messages,
+        seed_prompt=meta.get("seed_prompt"),
+        shard_texts=meta.get("shard_texts"),
+    )
     return {
         "transcript_id": str(uuid.uuid4()),
         "conversation": build_conversation(messages),

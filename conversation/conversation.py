@@ -330,10 +330,15 @@ def main(argv: list[str] | None = None) -> int:
     success_turn_counts: list[int] = []
     audit_durations: list[float] = []
     # high-level reason categories, mirrors `evaluate_outcome`:
-    REASON_CATEGORIES = ("provider_error", "hit_max_turns", "missing_verdict")
+    REASON_CATEGORIES = (
+        "provider_error",
+        "hit_max_turns",
+        "missing_seed_message",
+        "missing_verdict",
+    )
     reason_counts: Counter[str] = Counter()
     # detailed first-line bucket of inspect-ai errors for provider_error
-    # failures only (the other two categories are sample-level, not log errors)
+    # failures only (other categories are sample-level, not log errors)
     provider_error_details: Counter[str] = Counter()
     per_seed: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
@@ -342,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
             "turns": [],
             "provider_error": 0,
             "hit_max_turns": 0,
+            "missing_seed_message": 0,
             "missing_verdict": 0,
         }
     )
@@ -373,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
                 metadata={
                     "seed_identifier": sid,
                     "seed_description": seed["description"],
+                    "seed_prompt": seed["prompt"],
                     "shard_index": j,
                     "example_id": example_id,
                     "dataset_name": shard_record.get("dataset_name"),
@@ -381,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
                     "section_roles": [
                         s.get("section_role") for s in shard_record["shards"]
                     ],
+                    "shard_texts": shard_texts,
                     "target_turns": shard_record.get("target_turns"),
                 },
             )
@@ -473,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     for cat in REASON_CATEGORIES:
         n = reason_counts.get(cat, 0)
         if n:
-            print(f"    {cat + ':':<18} {n}", file=sys.stderr)
+            print(f"    {cat + ':':<22} {n}", file=sys.stderr)
     print(f"total time:          {_fmt_duration(elapsed)}", file=sys.stderr)
 
     # --- per-audit timing ---
@@ -534,13 +542,13 @@ def main(argv: list[str] | None = None) -> int:
         print("per-seed breakdown:", file=sys.stderr)
         header = (
             f"  {'seed_identifier':<24}  {'succ':>4}  {'fail':>4}  "
-            f"{'prov_err':>8}  {'max_turns':>9}  {'no_verdict':>10}  "
-            f"{'avg_turns':>9}"
+            f"{'prov_err':>8}  {'max_turns':>9}  {'no_seed':>7}  "
+            f"{'no_verdict':>10}  {'avg_turns':>9}"
         )
         print(header, file=sys.stderr)
         print(
             f"  {'-' * 24}  {'-' * 4}  {'-' * 4}  {'-' * 8}  "
-            f"{'-' * 9}  {'-' * 10}  {'-' * 9}",
+            f"{'-' * 9}  {'-' * 7}  {'-' * 10}  {'-' * 9}",
             file=sys.stderr,
         )
         for sid in sorted(per_seed):
@@ -550,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  {sid:<24}  {n_succ:>4}  {row['failure']:>4}  "
                 f"{row['provider_error']:>8}  {row['hit_max_turns']:>9}  "
+                f"{row['missing_seed_message']:>7}  "
                 f"{row['missing_verdict']:>10}  {avg_t:>9.1f}",
                 file=sys.stderr,
             )
