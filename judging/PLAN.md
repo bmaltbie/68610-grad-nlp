@@ -2,7 +2,7 @@
 
 ## Context
 
-This document covers the **judging stage** (stage 3) of the multi-turn ELEPHANT pipeline. For pipeline overview, stage boundaries, stable artifacts (`shards.jsonl` / `transcript.jsonl` / `judge.jsonl`), provenance fields, and the primary `N=4` condition, see [`multi-turn-elephant-framework-design.md`](./multi-turn-elephant-framework-design.md).
+This document covers the **judging stage** (stage 3) of the multi-turn ELEPHANT pipeline. For pipeline overview, stage boundaries, stable artifacts (`shards.jsonl` / `transcript.jsonl` / `judge.jsonl`), provenance fields, and the primary `N=4` condition, see [`docs/multi-turn-elephant-framework-design.md`](../docs/multi-turn-elephant-framework-design.md).
 
 **Scope of this doc:** judging-specific design only — ELEPHANT rubric adaptation, judge prompts, per-turn scoring strategy, dataset-to-dimension mapping, and analysis outputs. Cross-stage concepts (pipeline diagram, repo structure, artifact owners) are owned by the framework doc and intentionally not duplicated here.
 
