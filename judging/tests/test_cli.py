@@ -46,18 +46,29 @@ def test_score_missing_required_arg_errors():
         parser.parse_args(["score"])
 
 
-@pytest.mark.parametrize(
-    "argv,expected",
-    [
-        (["aggregate", "--judge-jsonl", "x.jsonl", "--kind", "rate"], "aggregate"),
-        (["plot", "--judge-jsonl", "x.jsonl", "--kind", "accumulation"], "plot"),
-        (["calibrate"], "calibrate"),
-    ],
-)
-def test_unimplemented_subcommands_parse_then_stub(argv, expected):
-    """aggregate/plot/calibrate parse, reach the NotImplemented stub."""
-    with pytest.raises(NotImplementedError, match=expected):
-        main(argv)
+def test_calibrate_still_a_stub():
+    """`calibrate` parses successfully and reaches NotImplemented."""
+    with pytest.raises(NotImplementedError, match="calibrate"):
+        main(["calibrate"])
+
+
+def test_aggregate_on_missing_input_errors_clean(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        main([
+            "aggregate",
+            "--judge-jsonl", str(tmp_path / "missing.jsonl"),
+            "--kind", "rate",
+        ])
+
+
+def test_plot_on_missing_input_errors_clean(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        main([
+            "plot",
+            "--judge-jsonl", str(tmp_path / "missing.jsonl"),
+            "--kind", "accumulation",
+            "--output-dir", str(tmp_path / "plots"),
+        ])
 
 
 def test_score_on_missing_input_errors_clean(tmp_path):

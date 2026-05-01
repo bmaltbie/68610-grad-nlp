@@ -123,6 +123,48 @@ def _cmd_moral(args) -> None:
     print(f"wrote {n} pairs to {args.output}")
 
 
+def _cmd_aggregate(args) -> None:
+    from judging.aggregate import (
+        compute_close_turn_rate,
+        compute_delta,
+        compute_moral_rate,
+        compute_rate,
+        load_index_df,
+    )
+
+    if args.kind == "moral":
+        if not args.moral_jsonl:
+            raise SystemExit("--moral-jsonl is required for --kind moral")
+        out = compute_moral_rate(args.moral_jsonl)
+    elif args.kind == "delta":
+        if not args.baselines_csv:
+            raise SystemExit("--baselines-csv is required for --kind delta")
+        out = compute_delta(load_index_df(args.judge_jsonl), args.baselines_csv)
+    elif args.kind == "close":
+        out = compute_close_turn_rate(load_index_df(args.judge_jsonl))
+    else:  # rate
+        out = compute_rate(
+            load_index_df(args.judge_jsonl),
+            by=["dataset_name", "target_model", "turn", "dimension"],
+        )
+
+    if args.output:
+        out.to_csv(args.output, index=False)
+        print(f"wrote {len(out)} rows to {args.output}")
+    else:
+        print(out.to_string(index=False))
+
+
+def _cmd_plot(args) -> None:
+    from judging.analysis import plot_accumulation_curves, plot_cross_dataset
+
+    if args.kind == "accumulation":
+        path = plot_accumulation_curves(args.judge_jsonl, args.output_dir)
+    else:  # cross_dataset
+        path = plot_cross_dataset(args.judge_jsonl, args.output_dir)
+    print(f"wrote {path}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -132,9 +174,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif args.command == "moral":
         _cmd_moral(args)
     elif args.command == "aggregate":
-        _stub("aggregate")
+        _cmd_aggregate(args)
     elif args.command == "plot":
-        _stub("plot")
+        _cmd_plot(args)
     elif args.command == "calibrate":
         _stub("calibrate")
     else:
