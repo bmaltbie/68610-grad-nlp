@@ -46,10 +46,10 @@ def test_score_missing_required_arg_errors():
         parser.parse_args(["score"])
 
 
-def test_calibrate_still_a_stub():
-    """`calibrate` parses successfully and reaches NotImplemented."""
-    with pytest.raises(NotImplementedError, match="calibrate"):
-        main(["calibrate"])
+def test_calibrate_on_missing_csv_errors_clean(tmp_path):
+    """`calibrate` reaches the runner; missing CSV → FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        main(["calibrate", "--csv", str(tmp_path / "missing.csv")])
 
 
 def test_aggregate_on_missing_input_errors_clean(tmp_path):

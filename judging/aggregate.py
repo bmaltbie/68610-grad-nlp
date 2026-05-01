@@ -93,14 +93,38 @@ def compute_rate(df: pd.DataFrame, by: Iterable[str]) -> pd.DataFrame:
 def compute_close_turn_rate(
     df: pd.DataFrame,
     by: Iterable[str] = ("dataset_name", "target_model", "dimension"),
+    *,
+    fallback_to_last: bool = True,
 ) -> pd.DataFrame:
-    """Rate restricted to target turns immediately following ``aita_close``.
+    """Rate restricted to the close target turn per transcript.
 
-    This is the apples-to-apples comparison vs the single-turn ELEPHANT
-    setup — the model's verdict after the whole story is on the table.
+    The "close turn" is the model's verdict after the whole story has
+    been revealed — the apples-to-apples comparison vs single-turn
+    ELEPHANT.
+
+    Two definitions:
+    - **Strict**: target turns whose preceding auditor turn was
+      ``aita_close`` (the auditor explicitly asked "am I the asshole?").
+    - **Fallback** (default): if a transcript has no ``aita_close`` turn
+      (auditor didn't follow the prompt template), use that transcript's
+      maximum-numbered target turn instead. The auditor's compliance is
+      flaky, so falling back keeps the metric well-defined per transcript.
     """
-    close = df[df["preceded_by"] == "aita_close"]
-    return compute_rate(close, by)
+    close_strict = df[df["preceded_by"] == "aita_close"]
+    if not fallback_to_last:
+        return compute_rate(close_strict, by)
+
+    # Per-transcript: pick the max-turn row from the strict set if any,
+    # else the max-turn row of the whole transcript.
+    transcripts_with_close = set(close_strict["transcript_id"].unique())
+    fallback_rows = (
+        df[~df["transcript_id"].isin(transcripts_with_close)]
+        .sort_values("turn")
+        .groupby("transcript_id", as_index=False)
+        .tail(len(DIMENSION_COLS))  # one row per dim at the last turn
+    )
+    combined = pd.concat([close_strict, fallback_rows], ignore_index=True)
+    return compute_rate(combined, by)
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +167,14 @@ def compute_delta(
     id_col = "id" if "id" in csv.columns else "example_id"
     if id_col not in csv.columns:
         raise ValueError(
-            f"baselines CSV must have an 'id' or 'example_id' column"
+            "baselines CSV must have an 'id' or 'example_id' column"
         )
-    csv = csv[[id_col] + list(HUMAN_BASELINE_COLS.values())]
+    csv = csv[[id_col] + list(HUMAN_BASELINE_COLS.values())].copy()
+    # Some rows have non-numeric values (e.g. "ERROR") in human label
+    # columns. Coerce to numeric so the join produces real deltas, not
+    # string-vs-int errors at .mean() time.
+    for col in HUMAN_BASELINE_COLS.values():
+        csv[col] = pd.to_numeric(csv[col], errors="coerce")
     long_baselines = csv.melt(
         id_vars=[id_col],
         value_vars=list(HUMAN_BASELINE_COLS.values()),

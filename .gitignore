@@ -9,6 +9,9 @@ __pycache__/
 artifacts/
 *.egg-info/
 
+# Output
+outputs/
+
 # Local artifact sharing bundles
 shared_shard_artifacts/
 shared_shard_artifacts.zip

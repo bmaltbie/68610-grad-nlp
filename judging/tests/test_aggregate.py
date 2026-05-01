@@ -107,22 +107,53 @@ def test_compute_rate_means_per_group():
     assert b["n"] == 1
 
 
-def test_compute_close_turn_rate_filters_to_aita_close():
+def test_compute_close_turn_rate_strict_filters_to_aita_close():
     df = _long_df(
         [
-            {"target_model": "A", "dimension": "validation", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
-            {"target_model": "A", "dimension": "validation", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
-            {"target_model": "A", "dimension": "validation", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
-            {"target_model": "A", "dimension": "framing", "score": 0, "preceded_by": "interrupt", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 4, "target_model": "A", "dimension": "validation", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 6, "target_model": "A", "dimension": "validation", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t2", "turn": 6, "target_model": "A", "dimension": "validation", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 4, "target_model": "A", "dimension": "framing", "score": 0, "preceded_by": "interrupt", "dataset_name": "AITA-YTA"},
         ]
     )
-    out = compute_close_turn_rate(df)
+    out = compute_close_turn_rate(df, fallback_to_last=False)
     # Two close-turn rows for validation (both 1) → rate=1, n=2.
     val = out[(out["dimension"] == "validation")].iloc[0]
     assert val["rate"] == 1.0
     assert val["n"] == 2
-    # framing has no close-turn rows → not in output.
+    # framing has no close-turn rows in strict mode → not in output.
     assert (out["dimension"] == "framing").sum() == 0
+
+
+def test_compute_close_turn_rate_fallback_uses_last_turn():
+    """When a transcript has no aita_close turn, fall back to its max-turn row."""
+    df = _long_df(
+        [
+            # t1: has aita_close at turn 6
+            {"transcript_id": "t1", "turn": 4, "target_model": "A", "dimension": "validation", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 4, "target_model": "A", "dimension": "indirectness", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 4, "target_model": "A", "dimension": "framing", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 6, "target_model": "A", "dimension": "validation", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 6, "target_model": "A", "dimension": "indirectness", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t1", "turn": 6, "target_model": "A", "dimension": "framing", "score": 1, "preceded_by": "aita_close", "dataset_name": "AITA-YTA"},
+            # t2: NO aita_close — last turn (10) is preceded_by=shard
+            {"transcript_id": "t2", "turn": 8, "target_model": "A", "dimension": "validation", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t2", "turn": 8, "target_model": "A", "dimension": "indirectness", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t2", "turn": 8, "target_model": "A", "dimension": "framing", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t2", "turn": 10, "target_model": "A", "dimension": "validation", "score": 1, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t2", "turn": 10, "target_model": "A", "dimension": "indirectness", "score": 0, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+            {"transcript_id": "t2", "turn": 10, "target_model": "A", "dimension": "framing", "score": 1, "preceded_by": "shard", "dataset_name": "AITA-YTA"},
+        ]
+    )
+    out = compute_close_turn_rate(df)  # fallback_to_last=True by default
+    # validation: t1 close=1, t2 last=1 → rate=1.0, n=2
+    val = out[out["dimension"] == "validation"].iloc[0]
+    assert val["rate"] == 1.0
+    assert val["n"] == 2
+    # indirectness: t1 close=1, t2 last=0 → rate=0.5, n=2
+    ind = out[out["dimension"] == "indirectness"].iloc[0]
+    assert ind["rate"] == pytest.approx(0.5)
+    assert ind["n"] == 2
 
 
 # ---------------------------------------------------------------------------

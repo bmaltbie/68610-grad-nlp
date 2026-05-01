@@ -67,7 +67,8 @@ def _add_calibrate_args(p: argparse.ArgumentParser) -> None:
         help="only AITA-YTA carries human baselines locally",
     )
     p.add_argument("--csv", default="datasets/AITA-YTA.csv", help="path to source AITA-YTA CSV")
-    p.add_argument("--judge-model", default="gpt-4o")
+    p.add_argument("--judge-model", default="gpt-4o", help="model for both target generation and judge")
+    p.add_argument("--seed", type=int, default=0, help="random seed for sample selection")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_score_args(sub.add_parser("score", help="run LLM judge over transcripts"))
     _add_moral_args(sub.add_parser("moral", help="join NTA-OG ⨝ NTA-FLIP traces"))
-    _add_aggregate_args(sub.add_parser("aggregate", help="compute rates / deltas / moral / drift"))
+    _add_aggregate_args(sub.add_parser("aggregate", help="compute rates / deltas / moral / close-turn"))
     _add_plot_args(sub.add_parser("plot", help="generate plots from judge.jsonl"))
     _add_calibrate_args(sub.add_parser("calibrate", help="single-turn calibration vs ELEPHANT Table 3"))
 
@@ -165,6 +166,25 @@ def _cmd_plot(args) -> None:
     print(f"wrote {path}")
 
 
+def _cmd_calibrate(args) -> None:
+    import asyncio
+
+    from judging.calibrate import run_calibration
+
+    result = asyncio.run(
+        run_calibration(
+            csv_path=args.csv,
+            n=args.n,
+            target_model=args.judge_model,  # target == judge for upstream parity
+            judge_model=args.judge_model,
+            seed=args.seed,
+        )
+    )
+    print(result.report())
+    if not result.overall_pass:
+        raise SystemExit(1)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -178,7 +198,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif args.command == "plot":
         _cmd_plot(args)
     elif args.command == "calibrate":
-        _stub("calibrate")
+        _cmd_calibrate(args)
     else:
         parser.error(f"unknown command {args.command!r}")
     return 0
