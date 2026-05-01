@@ -27,6 +27,7 @@ For judging-specific design see [`PLAN.md`](./PLAN.md) and
 - `moral.py` — `MoralScorer`, joins paired AITA-NTA-OG ⨝ AITA-NTA-FLIP
   transcripts and computes per-target-turn-position moral comparisons.
 - `runner.py` — end-to-end orchestrator (`run_score`, `run_moral`).
+- `batch_runner.py` — OpenAI Batch API path (50% cheaper, up to 24h SLA).
 - `aggregate.py` — per-turn rates, S^d deltas, close-turn rate, moral
   rate. Long-format pandas output.
 - `analysis.py` — accumulation-curve and cross-dataset plots.
@@ -140,12 +141,29 @@ paper measured (Mar–Sept 2025) and our run (Apr 2026), and document it
 as a known limitation rather than a code-side bug. Multi-turn results
 are reported on an internally consistent scale.
 
+### Batch API (50% cheaper, up to 24h SLA)
+
+```sh
+# Submit + poll until complete in one shot
+python -m judging score \
+    --input datasets/conversation_transcripts.jsonl \
+    --output-dir outputs/judging \
+    --judge-model gpt-4o-2024-11-20 \
+    --batch \
+    --poll-interval-s 300
+
+# Or: submit, walk away, resume later with the printed batch id
+python -m judging score --input ... --batch  # prints batch_id, then polls
+# (later, after closing the laptop)
+python -m judging score --input ... --batch --batch-id batch_abc123
+```
+
+When `--batch` is on, `--concurrency` and `--resume` are ignored
+(batch executes server-side; rerun with the same `batch_id` to resume).
+
 ## What's next
 
-- **OpenAI Batch API** path is currently a stub (`--batch` flag raises
-  `NotImplementedError`). The async-with-retry path is fast enough for
-  the smoke and pilot phases (~$30–60 for ~500 transcripts); batch only
-  matters at full-study scale (5000+ transcripts) where the 50% discount
-  starts mattering. Implement when needed.
 - More transcripts and FLIP coverage from the conversation stage to
   activate the moral-pair join and tighten per-turn CIs.
+- Auditor compliance with the AITA close question (currently the
+  pragmatic last-target-turn fallback handles the gap).

@@ -26,8 +26,10 @@ def _add_score_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--output-dir", default="outputs/judging", help="where to write judge.jsonl + traces/")
     p.add_argument("--judge-model", default="gpt-4o", help="OpenAI model for the judge")
     p.add_argument("--concurrency", type=int, default=8, help="max concurrent API calls")
-    p.add_argument("--batch", action="store_true", help="route through OpenAI Batch API")
-    p.add_argument("--resume", action="store_true", help="skip transcripts whose trace file already exists")
+    p.add_argument("--batch", action="store_true", help="route through OpenAI Batch API (50%% cheaper, up to 24h SLA)")
+    p.add_argument("--batch-id", default=None, help="resume an already-submitted batch; skips submission and polls this batch")
+    p.add_argument("--poll-interval-s", type=int, default=60, help="seconds between batch status polls (default 60)")
+    p.add_argument("--resume", action="store_true", help="skip transcripts whose trace file already exists (async path only)")
     p.add_argument("--max", type=int, default=None, help="cap number of transcripts (smoke test)")
     p.add_argument("--single-turn", action="store_true", help="bypass multi-turn formatter (calibration mode)")
 
@@ -104,6 +106,8 @@ def _cmd_score(args) -> None:
         raise SystemExit(
             "--single-turn is only valid on `calibrate`, not `score`"
         )
+    if args.batch_id and not args.batch:
+        raise SystemExit("--batch-id requires --batch")
     asyncio.run(
         run_score(
             input_path=args.input,
@@ -113,6 +117,8 @@ def _cmd_score(args) -> None:
             resume=args.resume,
             max_count=args.max,
             batch=args.batch,
+            batch_id=args.batch_id,
+            poll_interval_s=args.poll_interval_s,
         )
     )
 

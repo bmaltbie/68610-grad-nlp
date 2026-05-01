@@ -168,15 +168,29 @@ def test_run_score_resume_skips_existing(patched_runner, tmp_path):
     assert stats["scored"] == 0
 
 
-def test_run_score_batch_flag_unimplemented(tmp_path):
-    with pytest.raises(NotImplementedError, match="Batch API"):
-        asyncio.run(
-            runner.run_score(
-                input_path=tmp_path / "x.jsonl",
-                output_dir=tmp_path / "out",
-                batch=True,
-            )
+def test_run_score_batch_dispatches_to_batch_runner(monkeypatch, tmp_path):
+    """When batch=True, run_score forwards to batch_runner.run_batch."""
+    from judging import batch_runner
+
+    called = {}
+
+    async def _fake_run_batch(**kwargs):
+        called.update(kwargs)
+        return {"transcripts": 0, "scored": 0}
+
+    monkeypatch.setattr(batch_runner, "run_batch", _fake_run_batch)
+
+    asyncio.run(
+        runner.run_score(
+            input_path=tmp_path / "x.jsonl",
+            output_dir=tmp_path / "out",
+            batch=True,
+            batch_id="batch_abc",
+            poll_interval_s=5,
         )
+    )
+    assert called["batch_id"] == "batch_abc"
+    assert called["poll_interval_s"] == 5
 
 
 # ---------------------------------------------------------------------------

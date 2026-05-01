@@ -232,15 +232,28 @@ async def run_score(
     resume: bool = False,
     max_count: Optional[int] = None,
     batch: bool = False,
+    batch_id: Optional[str] = None,
+    poll_interval_s: int = 60,
 ) -> dict:
     """Score every transcript in ``input_path`` and write outputs.
 
     Returns a stats dict (transcripts processed, calls made).
+
+    When ``batch=True``, dispatch to the OpenAI Batch API path
+    (``judging.batch_runner.run_batch``). ``--concurrency`` and
+    ``--resume`` are ignored under batch (the batch endpoint runs
+    server-side; rerun with the same ``batch_id`` to resume).
     """
     if batch:
-        raise NotImplementedError(
-            "--batch (OpenAI Batch API) is not yet wired; rerun without "
-            "--batch and use --concurrency for parallel async calls"
+        from judging.batch_runner import run_batch
+
+        return await run_batch(
+            input_path=input_path,
+            output_dir=output_dir,
+            judge_model=judge_model,
+            batch_id=batch_id,
+            poll_interval_s=poll_interval_s,
+            max_count=max_count,
         )
 
     output_dir = Path(output_dir)

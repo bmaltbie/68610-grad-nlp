@@ -103,7 +103,23 @@ Headline comparison: **per-turn rate trajectory** (multi-turn) vs **single-turn 
 
 ---
 
-## After step 5 — tiered rollout (real API spend, no new code)
+## Step 6 — Batch API (done)
+
+- [x] `judging/batch_runner.py` — build requests with stable `custom_id`s,
+  upload as JSONL, create batch on `/v1/chat/completions`, poll until
+  terminal status, download output, parse responses, assemble traces +
+  index identical to the async path
+- [x] Wire `score --batch` to dispatch through `batch_runner.run_batch`;
+  `--batch-id` resumes an already-submitted batch
+- [x] `judging/tests/test_batch_runner.py` — custom_id round-trip, strict
+  JSON schema construction, request shape, submit/poll/download flow
+  with mocked client, end-to-end run_batch on real transcript
+
+**Commit:** `judging: OpenAI Batch API path (50% cheaper, up to 24h SLA)`
+
+---
+
+## After step 6 — tiered rollout (real API spend, no new code)
 
 - [ ] **A. Smoke test** (~$1): `python -m judging score --input ... --max 10` on
   10 transcripts. Eyeball 5 reasoning traces; assert 100% structured-output
