@@ -28,7 +28,6 @@ def _add_score_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--concurrency", type=int, default=8, help="max concurrent API calls")
     p.add_argument("--batch", action="store_true", help="route through OpenAI Batch API")
     p.add_argument("--resume", action="store_true", help="skip transcripts whose trace file already exists")
-    p.add_argument("--dry-run", action="store_true", help="estimate calls + cost without API spend")
     p.add_argument("--max", type=int, default=None, help="cap number of transcripts (smoke test)")
     p.add_argument("--single-turn", action="store_true", help="bypass multi-turn formatter (calibration mode)")
 
@@ -93,14 +92,45 @@ def _stub(command: str) -> None:
     )
 
 
+def _cmd_score(args) -> None:
+    import asyncio
+
+    from judging.runner import run_score
+
+    if args.single_turn:
+        # Single-turn mode is owned by the calibrate subcommand;
+        # forbid it on `score` to keep semantics clean.
+        raise SystemExit(
+            "--single-turn is only valid on `calibrate`, not `score`"
+        )
+    asyncio.run(
+        run_score(
+            input_path=args.input,
+            output_dir=args.output_dir,
+            judge_model=args.judge_model,
+            concurrency=args.concurrency,
+            resume=args.resume,
+            max_count=args.max,
+            batch=args.batch,
+        )
+    )
+
+
+def _cmd_moral(args) -> None:
+    from judging.runner import run_moral
+
+    n = run_moral(judge_jsonl=args.judge_jsonl, output_path=args.output)
+    print(f"wrote {n} pairs to {args.output}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "score":
-        _stub("score")
+        _cmd_score(args)
     elif args.command == "moral":
-        _stub("moral")
+        _cmd_moral(args)
     elif args.command == "aggregate":
         _stub("aggregate")
     elif args.command == "plot":

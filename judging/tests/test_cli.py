@@ -49,17 +49,44 @@ def test_score_missing_required_arg_errors():
 @pytest.mark.parametrize(
     "argv,expected",
     [
-        (["score", "--input", "x.jsonl"], "score"),
-        (["moral", "--judge-jsonl", "x.jsonl"], "moral"),
         (["aggregate", "--judge-jsonl", "x.jsonl", "--kind", "rate"], "aggregate"),
         (["plot", "--judge-jsonl", "x.jsonl", "--kind", "accumulation"], "plot"),
         (["calibrate"], "calibrate"),
     ],
 )
-def test_subcommands_parse_then_stub(argv, expected):
-    """Each subcommand parses successfully and reaches the NotImplemented stub."""
+def test_unimplemented_subcommands_parse_then_stub(argv, expected):
+    """aggregate/plot/calibrate parse, reach the NotImplemented stub."""
     with pytest.raises(NotImplementedError, match=expected):
         main(argv)
+
+
+def test_score_on_missing_input_errors_clean(tmp_path):
+    """`score` on a nonexistent input fails fast with FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        main([
+            "score",
+            "--input", str(tmp_path / "missing.jsonl"),
+            "--output-dir", str(tmp_path / "out"),
+        ])
+
+
+def test_score_rejects_single_turn_flag(tmp_path):
+    """--single-turn belongs on `calibrate`; rejected by `score`."""
+    with pytest.raises(SystemExit):
+        main([
+            "score",
+            "--input", str(tmp_path / "x.jsonl"),
+            "--single-turn",
+        ])
+
+
+def test_moral_on_missing_jsonl_errors_clean(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        main([
+            "moral",
+            "--judge-jsonl", str(tmp_path / "missing-judge.jsonl"),
+            "--output", str(tmp_path / "moral.jsonl"),
+        ])
 
 
 def test_aggregate_kind_choices_enforced():
@@ -68,8 +95,8 @@ def test_aggregate_kind_choices_enforced():
         parser.parse_args(["aggregate", "--judge-jsonl", "x.jsonl", "--kind", "bogus"])
 
 
-def test_score_dry_run_flag_present():
+def test_score_resume_flag_parses():
     parser = build_parser()
-    args = parser.parse_args(["score", "--input", "x.jsonl", "--dry-run"])
-    assert args.dry_run is True
+    args = parser.parse_args(["score", "--input", "x.jsonl", "--resume"])
+    assert args.resume is True
     assert args.command == "score"
