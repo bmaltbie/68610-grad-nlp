@@ -41,6 +41,15 @@ copy_required_pattern() {
   cp "${matches[@]}" "$SHARE_DIR/"
 }
 
+copy_optional_pattern() {
+  local pattern="$1"
+  local matches=("$ARTIFACTS_DIR"/$pattern)
+  if (( ${#matches[@]} == 0 )); then
+    return
+  fi
+  cp "${matches[@]}" "$SHARE_DIR/"
+}
+
 checksum_files() {
   if command -v shasum >/dev/null 2>&1; then
     for file in *.jsonl *.json README.md; do
@@ -86,6 +95,10 @@ mkdir -p "$SHARE_DIR"
 copy_required_pattern 'shards.AITA-*.openai.k*.jsonl' 'shard'
 copy_required_pattern 'atomic_units.AITA-*.openai.jsonl' 'atomic unit'
 copy_required_pattern 'shard_ablation.AITA-*.openai.summary.json' 'summary'
+copy_optional_pattern 'shards.AITA-*.openai.k*.eligible_all*.jsonl'
+copy_optional_pattern 'cohort.AITA-*.openai.eligible_all*.summary.json'
+copy_optional_pattern 'cohorts/shards.AITA-*.openai.k*.eligible_all*.jsonl'
+copy_optional_pattern 'cohorts/cohort.AITA-*.openai.eligible_all*.summary.json'
 if [[ "$INCLUDE_ERRORS" == "1" ]]; then
   copy_required_pattern 'run_errors.AITA-*.openai.atomic.jsonl' 'atomic error'
 fi
@@ -111,8 +124,10 @@ Shard counts:
 
 Files:
 - \`shards.<dataset>.openai.k<4|6|8>.jsonl\`: final validated shard artifacts
+- \`shards.<dataset>.openai.k<4|6|8>.eligible_all_*.jsonl\`: optional matched-cohort shard artifacts
 - \`atomic_units.<dataset>.openai.jsonl\`: reusable atomic-unit caches
 - \`shard_ablation.<dataset>.openai.summary.json\`: run summaries
+- \`cohort.<dataset>.openai.eligible_all_*.summary.json\`: optional matched-cohort summaries
 - \`run_errors.<dataset>.openai.atomic.jsonl\`: rows that failed atomic extraction
 - \`SHA256SUMS.txt\`: SHA-256 checksums for integrity checks
 - \`LINE_COUNTS.txt\`: line counts for quick completeness checks

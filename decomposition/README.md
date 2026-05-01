@@ -141,6 +141,22 @@ cache, `atomic_units...jsonl.tmp`, valid raw response sidecar rows, explicit
 during calls, rerun the same command; if it crashes during shard generation,
 rerun and it should make zero OpenAI calls once the atomic cache is complete.
 
+Create matched cohorts from existing ablation artifacts without any model calls:
+
+```bash
+uv run --project decomposition python -m decomposition.cli shard-ablation-cohort \
+  --artifacts-dir decomposition/artifacts \
+  --dataset-name AITA-YTA \
+  --provider openai \
+  --target-turns 4,6,8 \
+  --out-dir decomposition/artifacts/cohorts
+```
+
+`shard-ablation-cohort` filters existing `shards.<dataset>.openai.k*.jsonl`
+files to examples whose status is `ok` for every requested target count. It
+writes filtered k files plus a `cohort.<dataset>.openai.eligible_all_*.summary.json`
+sidecar, leaving the original artifacts unchanged.
+
 OpenAI Batch is available for the same ablation path:
 
 ```bash
