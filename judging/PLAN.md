@@ -337,14 +337,11 @@ OpenAI Batch API (50% off) on full runs: **~$205**. Plan to validate end-to-end 
 
 ## Part 4: Analysis Outputs
 
-The auditor-turn-type labels (`shard` / `interrupt` / `aita_close`) drive the analysis split.
+Headline comparison: **single-turn baseline vs multi-turn trajectory.** The `aita_close` label identifies the apples-to-apples target turn (the model's final verdict after the full story has been revealed) for that comparison.
 
-1. **Per-turn accumulation curves, all target turns** — sycophancy rate (y) vs target-turn index (x), one line per dimension, one panel per `target_model`, 95% CI bands. Headline plot.
+1. **Per-turn accumulation curves** — sycophancy rate (y) vs target-turn index (x), one line per dimension, one panel per `target_model`, 95% CI bands. Headline plot.
 
-2. **Shard-reveal vs interrupt comparison** *(novel signal)* — for each dimension, plot two lines:
-   - Sycophancy rate at target turns following a `shard` reveal
-   - Sycophancy rate at target turns following an `interrupt`
-   Identical-information turns: the gap between the two lines isolates social-sycophancy drift from information-update behavior. This is the project's clearest multi-turn-only finding.
+2. **Close-turn vs single-turn baseline** — for each dimension, compare the multi-turn rate at the `aita_close` turn against the original ELEPHANT single-turn rate on the same posts. Quantifies the multi-turn effect at the natural decision point.
 
 3. **Cross-dataset comparison** — AITA-YTA vs AITA-NTA-OG vs AITA-NTA-FLIP rate trajectories on the same axes. Hypothesis: AITA-YTA shows the largest drop in validation as bullets accumulate (poster's wrongdoing becomes clearer); AITA-NTA-FLIP shows the largest moral sycophancy rate.
 
@@ -355,6 +352,8 @@ The auditor-turn-type labels (`shard` / `interrupt` / `aita_close`) drive the an
 6. **Per-dimension comparison** — how validation, indirectness, and framing evolve differently across turns. Reproduce ELEPHANT's "framing is hardest to mitigate" finding in the multi-turn setting.
 
 7. **Judge reasoning excerpts** — at inflection points (turn where a score flips 1→0), pull the judge's `reasoning` field for qualitative examples in the paper.
+
+*(Out of scope: shard-vs-interrupt drift comparison. The classifier still emits `interrupt` / `shard` labels, but they are not consumed by any analysis in this iteration.)*
 
 ---
 
@@ -412,7 +411,7 @@ The judging stage consumes the per-conversation JSONL produced by `conversation/
 **Key shape facts** (drive the judge's I/O layer):
 
 - `conversation` is a **list of single-message turns**, not paired exchanges. Auditor and target alternate, each at its own `turn` index. So a conversation of length `2N` has `N` auditor turns and `N` target turns.
-- The interrupt phrase from `seed.json` (e.g. `"wait im not finished yet"`) appears as **its own auditor turn** — not glued to a bullet. This is intentional and creates a uniquely multi-turn signal: a target reply right after an interrupt has the **same information state** as the previous target reply, so any drift is pure social sycophancy.
+- The interrupt phrase from `seed.json` (e.g. `"wait im not finished yet"`) appears as **its own auditor turn** — not glued to a bullet. The classifier labels it for completeness, but the shard-vs-interrupt drift analysis is **out of scope** for this iteration; the headline comparison is single-turn baseline vs multi-turn trajectory.
 - `succeeded: True` ⇒ the audit completed cleanly (auditor invoked `end_conversation`, no API failure). `succeeded: False` records are filtered out at ingest — partial/corrupted transcripts shouldn't enter rate aggregations. `reason` is non-empty when `succeeded: False`.
 
 ### Auditor Turn Types

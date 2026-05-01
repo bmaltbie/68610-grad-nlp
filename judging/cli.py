@@ -1,0 +1,112 @@
+"""Command-line entry for the judging stage.
+
+Subcommands:
+- ``score``     — run the LLM judge over transcripts, write
+                  ``judge.jsonl`` index + per-trace JSON files.
+- ``moral``     — second-pass: join NTA-OG and NTA-FLIP traces by
+                  ``example_id`` and write ``moral.jsonl``.
+- ``aggregate`` — compute per-turn rates / S^d deltas / close-turn rate
+                  / moral rate from the index outputs.
+- ``plot``      — generate accumulation curves / cross-dataset
+                  comparisons.
+- ``calibrate`` — single-turn calibration vs ELEPHANT Table 3.
+
+Steps 2–5 of TODO.md fill in the stubs. Step 1 just wires the surface
+area so the package is callable end-to-end via ``python -m judging``.
+"""
+
+from __future__ import annotations
+
+import argparse
+from typing import Optional, Sequence
+
+
+def _add_score_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--input", required=True, help="path to conversation_transcripts.jsonl")
+    p.add_argument("--output-dir", default="outputs/judging", help="where to write judge.jsonl + traces/")
+    p.add_argument("--judge-model", default="gpt-4o", help="OpenAI model for the judge")
+    p.add_argument("--concurrency", type=int, default=8, help="max concurrent API calls")
+    p.add_argument("--batch", action="store_true", help="route through OpenAI Batch API")
+    p.add_argument("--resume", action="store_true", help="skip transcripts whose trace file already exists")
+    p.add_argument("--dry-run", action="store_true", help="estimate calls + cost without API spend")
+    p.add_argument("--max", type=int, default=None, help="cap number of transcripts (smoke test)")
+    p.add_argument("--single-turn", action="store_true", help="bypass multi-turn formatter (calibration mode)")
+
+
+def _add_moral_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--judge-jsonl", required=True, help="path to judge.jsonl from `score`")
+    p.add_argument("--output", default="outputs/judging/moral.jsonl", help="output moral.jsonl path")
+
+
+def _add_aggregate_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--judge-jsonl", required=True)
+    p.add_argument(
+        "--kind",
+        choices=["rate", "delta", "moral", "close"],
+        required=True,
+        help="rate=per-turn rates; delta=S^d vs human (AITA-YTA); moral=moral rate; close=close-turn rate (vs single-turn baseline)",
+    )
+    p.add_argument("--baselines-csv", default=None, help="AITA-YTA CSV with *_human columns (delta only)")
+    p.add_argument("--moral-jsonl", default=None, help="path to moral.jsonl (kind=moral only)")
+    p.add_argument("--output", default=None, help="optional output CSV path")
+
+
+def _add_plot_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--judge-jsonl", required=True)
+    p.add_argument(
+        "--kind",
+        choices=["accumulation", "cross_dataset"],
+        required=True,
+    )
+    p.add_argument("--output-dir", default="outputs/judging/plots")
+
+
+def _add_calibrate_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--n", type=int, default=30, help="number of records to sample")
+    p.add_argument(
+        "--dataset", choices=["AITA-YTA"], default="AITA-YTA",
+        help="only AITA-YTA carries human baselines locally",
+    )
+    p.add_argument("--csv", default="datasets/AITA-YTA.csv", help="path to source AITA-YTA CSV")
+    p.add_argument("--judge-model", default="gpt-4o")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m judging",
+        description="Judging stage of the multi-turn ELEPHANT pipeline.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_score_args(sub.add_parser("score", help="run LLM judge over transcripts"))
+    _add_moral_args(sub.add_parser("moral", help="join NTA-OG ⨝ NTA-FLIP traces"))
+    _add_aggregate_args(sub.add_parser("aggregate", help="compute rates / deltas / moral / drift"))
+    _add_plot_args(sub.add_parser("plot", help="generate plots from judge.jsonl"))
+    _add_calibrate_args(sub.add_parser("calibrate", help="single-turn calibration vs ELEPHANT Table 3"))
+
+    return parser
+
+
+def _stub(command: str) -> None:
+    raise NotImplementedError(
+        f"`{command}` is wired but not yet implemented; see judging/TODO.md"
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "score":
+        _stub("score")
+    elif args.command == "moral":
+        _stub("moral")
+    elif args.command == "aggregate":
+        _stub("aggregate")
+    elif args.command == "plot":
+        _stub("plot")
+    elif args.command == "calibrate":
+        _stub("calibrate")
+    else:
+        parser.error(f"unknown command {args.command!r}")
+    return 0
