@@ -7,6 +7,10 @@ __pycache__/
 .env.*
 !.env.example
 artifacts/
+*.egg-info/
+
+# Output
+outputs/
 
 # Local artifact sharing bundles
 shared_shard_artifacts/
@@ -15,3 +19,4 @@ shared_shard_artifacts.zip
 # Local agent config
 AGENT.md
 CLAUDE.md
+.claude/

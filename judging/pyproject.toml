@@ -1,5 +1,5 @@
 [project]
-name = "judging"
+name = "68610-grad-nlp-judging"
 version = "0.1.0"
 description = "Judging stage of the multi-turn ELEPHANT pipeline"
 requires-python = ">=3.11"
@@ -25,9 +25,11 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = [".."]
 include = ["judging*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = [".."]
 asyncio_mode = "auto"
+addopts = "-q"
