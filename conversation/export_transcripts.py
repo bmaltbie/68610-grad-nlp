@@ -79,6 +79,8 @@ _VERDICT_RE = re.compile(
     r"\b(?:YTA|NTA|ESH|NAH|YWBTA|YWNBTA|YWNBTAH|YBTA|INFO|NAA|NTAH|NTH)\b"
     r"|\bass\s*-?\s*holes?\b"
     r"|\bA-holes?\b"
+    r"|\bAH\b"
+    r"|\bTA\b"
     r"|\bin\s+the\s+(?:right|wrong)\b"
     r"|\b(?:not\s+)?(?:at\s+fault|to\s+blame|your\s+fault)\b"
     r"|\byou(?:['’]re|\s+are)\s+(?:not\s+)?(?:wrong|right)\b"
