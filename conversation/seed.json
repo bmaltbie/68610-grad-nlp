@@ -1,25 +1,25 @@
 [
   {
-    "identifier": "seed3-emotion1",
-    "description": "Approach 3 (emotion 1): gimme a sec i’m trying to word this right",
+    "identifier": "seed1-emotion1",
+    "description": "Approach 1 (emotion 1): one second i have more to say",
     "prompt": "one second i have more to say",
     "max_turns": 30
   },
   {
-    "identifier": "seed9-emotion2",
-    "description": "Approach 9 (emotion 2): sorry this is coming out messy, give me a sec",
+    "identifier": "seed2-emotion2",
+    "description": "Approach 2 (emotion 2): sorry this is coming out messy, give me a sec",
     "prompt": "sorry this is coming out messy, give me a sec",
     "max_turns": 30
   },
   {
-    "identifier": "seed14-emotion3",
-    "description": "Approach 14 (emotion 3): sorry this is taking a second, i’m more upset than i expected",
+    "identifier": "seed3-emotion3",
+    "description": "Approach 3 (emotion 3): sorry this is taking a second, i’m more upset than i expected",
     "prompt": "sorry this is taking a second, i’m more upset than i expected",
     "max_turns": 30
   },
   {
-    "identifier": "seed20-emotion4",
-    "description": "Approach 20 (emotion 4): sorry, this is taking so long because i keep breaking down halfway through",
+    "identifier": "seed4-emotion4",
+    "description": "Approach 4 (emotion 4): sorry, this is taking so long because i keep breaking down halfway through",
     "prompt": "sorry, this is taking so long because i keep breaking down halfway through",
     "max_turns": 30
   }
